@@ -4,9 +4,27 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.1.0)'
+        required: true
+        type: string
+      use_main:
+        description: 'Check out main instead of the tag (use if the tag is broken)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+
+# Resolve the version and ref to use throughout the workflow.
+# - On tag push:        version = tag name, ref = tag
+# - On manual dispatch: version = input, ref = tag (or main if use_main=true)
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.use_main == 'true' && 'main' || (github.event_name == 'workflow_dispatch' && inputs.version || github.ref) }}
 
 jobs:
   build:
@@ -32,7 +50,10 @@ jobs:
             suffix: ".exe"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -66,7 +87,7 @@ jobs:
         run: |
           BINARY="memex-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
           go build \
-            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -ldflags="-s -w -X main.version=${{ env.RELEASE_VERSION }}" \
             -o "../dist/${BINARY}" \
             ./cmd/
 
@@ -81,7 +102,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           path: dist/
           merge-multiple: true
@@ -89,10 +116,10 @@ jobs:
       - name: Generate checksums
         run: sha256sum dist/* > dist/checksums.txt
 
-      - uses: actions/checkout@v4
-
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: ${{ env.RELEASE_VERSION }}
           files: dist/*
           body_path: .github/RELEASE_NOTES_v0.1.0.md

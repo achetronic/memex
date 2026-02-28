@@ -14,6 +14,8 @@ No cloud dependency, no vendor lock-in — just your data, your server, and an O
 
 - **Multi-format ingestion**: PDF, TXT, Markdown, DOCX, ODT, HTML, CSV, JSON, YAML, TOML, XML, RTF, EML
 - **Semantic search**: cosine similarity via pgvector, powered by any OpenAI-compatible embeddings API
+- **Namespaces**: logical partitions — each document belongs to a namespace, queries are always scoped
+- **API key auth**: optional per-namespace key validation, configured in a YAML file with env var expansion
 - **Resilient worker**: configurable pool size, exponential backoff retries, graceful failure reporting
 - **REST API**: fully documented with Swagger UI at `/swagger/index.html`
 - **Vue 3 frontend**: upload, manage and search documents — served by the Go binary itself
@@ -41,7 +43,9 @@ Open http://localhost:8080 for the UI or http://localhost:8080/swagger/index.htm
 
 ## Configuration
 
-All configuration is done via environment variables. The docker-compose.yml passes
+### Environment variables
+
+All runtime tunables are set via environment variables. The docker-compose.yml passes
 them through from your shell, so you can set them in a `.env` file or export them.
 
 | Variable | Default | Description |
@@ -61,9 +65,69 @@ them through from your shell, so you can set them in a `.env` file or export the
 | `SEARCH_DEFAULT_LIMIT` | `5` | Default number of results returned by search |
 | `MAX_UPLOAD_SIZE_MB` | `50` | Maximum upload file size |
 
+### Config file (namespaces and auth)
+
+Namespaces and API key authentication are configured in an optional YAML file
+passed via the `-config` flag:
+
+```bash
+memex -config /path/to/config.yaml
+```
+
+All string values in the file support `${ENV_VAR}` expansion, so secrets never
+need to be written in plain text.
+
+```yaml
+namespaces:
+  - name: invoices
+  - name: contracts
+  - name: general
+
+auth:
+  api_keys:
+    - key: "${MEMEX_KEY_ADMIN}"
+      namespaces: ["*"]          # access to all namespaces
+    - key: "${MEMEX_KEY_SERVICE}"
+      namespaces: ["invoices", "contracts"]
+    - key: "${MEMEX_KEY_GENERAL}"
+      namespaces: ["general"]
+```
+
+A full example is in [`server/docs/config.yaml`](server/docs/config.yaml).
+
+When the file is not provided (or `auth.api_keys` is empty), auth is disabled
+and all requests are allowed through without any key or namespace header —
+useful for local and single-tenant deployments.
+
+---
+
+## Namespaces
+
+Namespaces are logical partitions within a single Memex instance. Every
+document belongs to a namespace and every query is scoped to one. They are
+passed as HTTP headers on each request:
+
+| Header | Description |
+|---|---|
+| `X-Memex-Namespace` | Target namespace for the operation |
+| `X-Memex-Api-Key` | API key for authentication (when auth is enabled) |
+
+When auth is disabled the headers are optional. When auth is enabled, both are
+required on every `/api/v1/*` request.
+
+Requests to an undeclared namespace are rejected with `400 Bad Request`.
+Requests with a valid key but no access to the namespace are rejected with `403 Forbidden`.
+
 ---
 
 ## API Reference
+
+All `/api/v1/*` endpoints accept these headers:
+
+| Header | Required | Description |
+|---|---|---|
+| `X-Memex-Namespace` | When auth enabled | Namespace to operate on |
+| `X-Memex-Api-Key` | When auth enabled | API key for authentication |
 
 ### Documents
 
@@ -147,6 +211,9 @@ cd frontend && npm ci && npm run dev
 cd server
 swag init -g cmd/main.go -o docs/
 DATABASE_URL=postgres://memex:memex@localhost:5432/memex go run ./cmd/
+
+# With namespaces and auth:
+DATABASE_URL=postgres://memex:memex@localhost:5432/memex go run ./cmd/ -config docs/config.yaml
 ```
 
 ### Regenerate Swagger docs

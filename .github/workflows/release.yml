@@ -89,8 +89,10 @@ jobs:
       - name: Generate checksums
         run: sha256sum dist/* > dist/checksums.txt
 
+      - uses: actions/checkout@v4
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: .github/RELEASE_NOTES_v0.1.0.md

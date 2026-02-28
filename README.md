@@ -50,7 +50,7 @@ them through from your shell, so you can set them in a `.env` file or export the
 | `LOG_FORMAT` | `json` | `console` or `json` |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `DATABASE_URL` | *(required)* | PostgreSQL DSN (set automatically in docker-compose) |
-| `OPENAI_BASE_URL` | `http://host.docker.internal:11434` | Base URL of any OpenAI-compatible API (Ollama, OpenAI, Groq…) |
+| `OPENAI_BASE_URL` | `http://localhost:11434` | Base URL of any OpenAI-compatible API (Ollama, OpenAI, Groq…) |
 | `OPENAI_API_KEY` | `ollama` | API key — use any non-empty string for Ollama, real key for OpenAI |
 | `OPENAI_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name — must be available in the provider |
 | `OPENAI_EMBEDDING_DIM` | `768` | Vector dimensions — must match the model output |

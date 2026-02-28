@@ -1,9 +1,8 @@
 name: Release Binaries
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -20,11 +19,11 @@ permissions:
   contents: write
 
 # Resolve the version and ref to use throughout the workflow.
-# - On tag push:        version = tag name, ref = tag
-# - On manual dispatch: version = input, ref = tag (or main if use_main=true)
+# - On release published: version = tag name, ref = tag
+# - On manual dispatch:   version = input, ref = tag (or main if use_main=true)
 env:
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
-  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.use_main == 'true' && 'main' || (github.event_name == 'workflow_dispatch' && inputs.version || github.ref) }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name }}
+  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.use_main == 'true' && 'main' || (github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name) }}
 
 jobs:
   build:
@@ -98,7 +97,7 @@ jobs:
           path: dist/
 
   release:
-    name: Create GitHub Release
+    name: Upload artifacts to GitHub Release
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -116,10 +115,8 @@ jobs:
       - name: Generate checksums
         run: sha256sum dist/* > dist/checksums.txt
 
-      - name: Create release
+      - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
-          name: ${{ env.RELEASE_VERSION }}
           files: dist/*
-          body_path: .github/RELEASE_NOTES_v0.1.0.md

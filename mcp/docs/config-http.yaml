@@ -1,0 +1,86 @@
+# memex-mcp — HTTP mode with JWT auth and policies
+# Use this for production deployments accessible by multiple agents
+
+server:
+  name: "memex-mcp"
+  version: "0.1.0"
+  transport:
+    type: "http"
+    http:
+      host: ":8090"
+
+memex:
+  base_url: "${MEMEX_BASE_URL}"
+  default_namespace: ""   # override per-request via the namespace tool parameter
+
+middleware:
+  access_logs:
+    excluded_headers:
+      - "Accept"
+      - "Accept-Encoding"
+    redacted_headers:
+      - "Authorization"
+      - "Cookie"
+
+  jwt:
+    enabled: true
+    jwks_uri: "https://your-idp.com/.well-known/jwks.json"
+    cache_interval: 5m
+    allow_conditions:
+      - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
+
+# Tool + namespace access policies based on JWT claims.
+# First matching policy wins — order matters.
+policies:
+  tools:
+    # Admins can use all tools
+    - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
+      allowed_tools: ["*"]
+
+    # Agents with memex:write scope can upload and delete
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:write")'
+      allowed_tools:
+        - "upload_document"
+        - "delete_document"
+        - "list_documents"
+        - "get_document"
+        - "search"
+        - "health"
+
+    # Agents with memex:read scope can only read and search
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
+      allowed_tools:
+        - "list_documents"
+        - "get_document"
+        - "search"
+        - "health"
+
+  namespaces:
+    # Admins can access any namespace
+    - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
+      allowed_namespaces: ["*"]
+
+    # Agents can only access their own namespace (sub claim = namespace)
+    - expression: 'has(payload.sub)'
+      allowed_namespaces:
+        - "${payload.sub}"   # evaluated at runtime by the policy engine
+
+oauth_authorization_server:
+  enabled: true
+  url_suffix: ""
+  issuer_uri: "https://your-idp.com"
+
+oauth_protected_resource:
+  enabled: true
+  url_suffix: ""
+  resource: "https://your-memex-mcp.example.com"
+  auth_servers:
+    - "https://your-idp.com"
+  jwks_uri: "https://your-idp.com/.well-known/jwks.json"
+  scopes_supported:
+    - "memex:read"
+    - "memex:write"
+  bearer_methods_supported:
+    - "header"
+  resource_name: "Memex MCP Server"
+  resource_documentation: "https://github.com/achetronic/memex"

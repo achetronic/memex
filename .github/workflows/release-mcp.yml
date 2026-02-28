@@ -1,0 +1,96 @@
+name: Release MCP Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.1.0)'
+        required: true
+        type: string
+      use_main:
+        description: 'Check out main instead of the tag (use if the tag is broken)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name }}
+  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.use_main == 'true' && 'main' || (github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name) }}
+
+jobs:
+  build:
+    name: Build MCP ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: ""
+          - goos: linux
+            goarch: arm64
+            suffix: ""
+          - goos: darwin
+            goarch: amd64
+            suffix: ""
+          - goos: darwin
+            goarch: arm64
+            suffix: ""
+          - goos: windows
+            goarch: amd64
+            suffix: ".exe"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build binary
+        working-directory: mcp
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY="memex-mcp-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
+          go build \
+            -ldflags="-s -w -X main.version=${{ env.RELEASE_VERSION }}" \
+            -o "../dist/${BINARY}" \
+            ./cmd/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: memex-mcp-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+
+  release:
+    name: Upload MCP artifacts to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum dist/* > dist/checksums-mcp.txt
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          files: dist/*

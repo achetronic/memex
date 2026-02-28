@@ -1,0 +1,12 @@
+# memex-mcp — stdio mode
+# Use this for local AI agent integrations (Claude Desktop, Cursor, etc.)
+
+server:
+  name: "memex-mcp"
+  version: "0.1.0"
+  transport:
+    type: "stdio"
+
+memex:
+  base_url: "http://localhost:8080"
+  # default_namespace: ""   # leave empty to send no namespace header by default

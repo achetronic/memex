@@ -12,19 +12,65 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package config loads and validates all application configuration.
-// Runtime tunables (ports, pool sizes, etc.) come from environment variables.
-// Namespaces and API key auth come from an optional YAML file passed via -config.
-// Environment variables in the YAML are expanded with os.ExpandEnv at load time.
+// Package config loads and validates all application configuration from a
+// YAML file. The path is passed via -config (default: config.yaml in the
+// working directory). All string values support ${ENV_VAR} expansion so
+// secrets can be injected from the environment without writing them in plain
+// text.
 package config
 
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ServerConfig holds HTTP server settings.
+type ServerConfig struct {
+	Port int `yaml:"port"`
+}
+
+// LogConfig holds logging settings.
+type LogConfig struct {
+	Format string `yaml:"format"` // "console" or "json"
+	Level  string `yaml:"level"`  // "debug", "info", "warn", "error"
+}
+
+// DatabaseConfig holds PostgreSQL connection settings.
+type DatabaseConfig struct {
+	URL string `yaml:"url"`
+}
+
+// EmbeddingsConfig holds settings for the OpenAI-compatible embeddings provider.
+type EmbeddingsConfig struct {
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
+	Dim     int    `yaml:"dim"`
+}
+
+// WorkerConfig holds ingestion worker pool settings.
+type WorkerConfig struct {
+	PoolSize   int `yaml:"pool_size"`
+	MaxRetries int `yaml:"max_retries"`
+}
+
+// ChunkerConfig holds text chunking settings.
+type ChunkerConfig struct {
+	Size    int `yaml:"size"`
+	Overlap int `yaml:"overlap"`
+}
+
+// SearchConfig holds search defaults.
+type SearchConfig struct {
+	DefaultLimit int `yaml:"default_limit"`
+}
+
+// UploadConfig holds upload limits.
+type UploadConfig struct {
+	MaxSizeMB int64 `yaml:"max_size_mb"`
+}
 
 // NamespaceConfig declares a single namespace that Memex is aware of.
 // Requests for undeclared namespaces are rejected with 400.
@@ -33,139 +79,118 @@ type NamespaceConfig struct {
 }
 
 // APIKeyConfig binds an API key to one or more namespaces.
-// Use "*" in Namespaces to grant access to all declared namespaces.
+// Use "*" in namespaces to grant access to all declared namespaces.
 type APIKeyConfig struct {
-	// Key is the raw API key value. Use ${ENV_VAR} for secret injection.
 	Key        string   `yaml:"key"`
 	Namespaces []string `yaml:"namespaces"`
 }
 
-// AuthConfig holds the API key authentication configuration.
-// When the section is absent or api_keys is empty, auth is disabled and all
-// requests are allowed through (useful for local / no-auth deployments).
+// AuthConfig holds API key authentication settings.
+// When api_keys is empty, auth is disabled and all requests are allowed through.
 type AuthConfig struct {
 	APIKeys []APIKeyConfig `yaml:"api_keys"`
 }
 
-// FileConfig is the structure of the optional YAML config file.
-// All string values support ${ENV_VAR} expansion.
-type FileConfig struct {
-	Namespaces []NamespaceConfig `yaml:"namespaces"`
-	Auth       AuthConfig        `yaml:"auth"`
-}
-
-// Config holds all runtime configuration for memex.
+// Config is the root configuration structure loaded from the YAML file.
 type Config struct {
-	// HTTP server
-	Port int
-
-	// Logging
-	LogFormat string // "console" or "json"
-	LogLevel  string // "debug", "info", "warn", "error"
-
-	// Database
-	DatabaseURL string
-
-	// OpenAI-compatible embeddings provider (works with Ollama, OpenAI, Groq, etc.)
-	OpenAIBaseURL        string
-	OpenAIAPIKey         string
-	OpenAIEmbeddingModel string
-	OpenAIEmbeddingDim   int
-
-	// Worker
-	WorkerPoolSize   int
-	WorkerMaxRetries int
-
-	// Chunker
-	ChunkSize    int
-	ChunkOverlap int
-
-	// Search
-	SearchDefaultLimit int
-
-	// Upload
-	MaxUploadSizeMB int64
-
-	// Namespaces and auth — loaded from optional YAML file.
-	// Empty means auth is disabled and no namespace validation is performed.
-	File FileConfig
+	Server     ServerConfig     `yaml:"server"`
+	Log        LogConfig        `yaml:"log"`
+	Database   DatabaseConfig   `yaml:"database"`
+	Embeddings EmbeddingsConfig `yaml:"embeddings"`
+	Worker     WorkerConfig     `yaml:"worker"`
+	Chunker    ChunkerConfig    `yaml:"chunker"`
+	Search     SearchConfig     `yaml:"search"`
+	Upload     UploadConfig     `yaml:"upload"`
+	Namespaces []NamespaceConfig `yaml:"namespaces"`
+	Auth       AuthConfig       `yaml:"auth"`
 }
 
-// Load reads all configuration. Runtime values come from environment variables.
-// If configPath is non-empty, the YAML file is loaded for namespace and auth config.
-// Returns an error if any required variable is missing or any value is invalid.
-func Load(configPath string) (*Config, error) {
-	cfg := &Config{
-		Port:                 envInt("PORT", 8080),
-		LogFormat:            envStr("LOG_FORMAT", "console"),
-		LogLevel:             envStr("LOG_LEVEL", "info"),
-		DatabaseURL:          envStr("DATABASE_URL", ""),
-		OpenAIBaseURL:        envStr("OPENAI_BASE_URL", "http://localhost:11434"),
-		OpenAIAPIKey:         envStr("OPENAI_API_KEY", "ollama"),
-		OpenAIEmbeddingModel: envStr("OPENAI_EMBEDDING_MODEL", "nomic-embed-text"),
-		OpenAIEmbeddingDim:   envInt("OPENAI_EMBEDDING_DIM", 768),
-		WorkerPoolSize:       envInt("WORKER_POOL_SIZE", 3),
-		WorkerMaxRetries:     envInt("WORKER_MAX_RETRIES", 3),
-		ChunkSize:            envInt("CHUNK_SIZE", 512),
-		ChunkOverlap:         envInt("CHUNK_OVERLAP", 64),
-		SearchDefaultLimit:   envInt("SEARCH_DEFAULT_LIMIT", 5),
-		MaxUploadSizeMB:      int64(envInt("MAX_UPLOAD_SIZE_MB", 50)),
+// defaults returns a Config pre-populated with sensible default values.
+func defaults() Config {
+	return Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Log: LogConfig{
+			Format: "console",
+			Level:  "info",
+		},
+		Embeddings: EmbeddingsConfig{
+			BaseURL: "http://localhost:11434",
+			APIKey:  "ollama",
+			Model:   "nomic-embed-text",
+			Dim:     768,
+		},
+		Worker: WorkerConfig{
+			PoolSize:   3,
+			MaxRetries: 3,
+		},
+		Chunker: ChunkerConfig{
+			Size:    512,
+			Overlap: 64,
+		},
+		Search: SearchConfig{
+			DefaultLimit: 5,
+		},
+		Upload: UploadConfig{
+			MaxSizeMB: 50,
+		},
 	}
-
-	if cfg.DatabaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
-	}
-
-	if cfg.LogFormat != "console" && cfg.LogFormat != "json" {
-		return nil, fmt.Errorf("LOG_FORMAT must be 'console' or 'json', got %q", cfg.LogFormat)
-	}
-
-	if cfg.ChunkOverlap >= cfg.ChunkSize {
-		return nil, fmt.Errorf("CHUNK_OVERLAP (%d) must be less than CHUNK_SIZE (%d)", cfg.ChunkOverlap, cfg.ChunkSize)
-	}
-
-	if configPath != "" {
-		fc, err := loadFileConfig(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("loading config file %q: %w", configPath, err)
-		}
-		cfg.File = *fc
-	}
-
-	return cfg, nil
 }
 
-// loadFileConfig reads and parses the YAML config file, expanding environment
-// variables in all string values before unmarshalling.
-func loadFileConfig(path string) (*FileConfig, error) {
+// Load reads and validates the config file at the given path.
+// If path is empty, it looks for "config.yaml" in the working directory.
+// Returns an error if the file is missing, malformed, or fails validation.
+func Load(path string) (*Config, error) {
+	if path == "" {
+		path = "config.yaml"
+	}
+
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading file: %w", err)
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
 	}
 
 	expanded := os.ExpandEnv(string(raw))
 
-	var fc FileConfig
-	if err := yaml.Unmarshal([]byte(expanded), &fc); err != nil {
-		return nil, fmt.Errorf("parsing YAML: %w", err)
+	cfg := defaults()
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file %q: %w", path, err)
 	}
 
-	return &fc, nil
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+// validate checks that all required fields are present and values are in range.
+func (c *Config) validate() error {
+	if c.Database.URL == "" {
+		return fmt.Errorf("database.url is required")
+	}
+	if c.Log.Format != "console" && c.Log.Format != "json" {
+		return fmt.Errorf("log.format must be 'console' or 'json', got %q", c.Log.Format)
+	}
+	if c.Chunker.Overlap >= c.Chunker.Size {
+		return fmt.Errorf("chunker.overlap (%d) must be less than chunker.size (%d)", c.Chunker.Overlap, c.Chunker.Size)
+	}
+	return nil
 }
 
 // IsAuthEnabled reports whether API key authentication is active.
-// Auth is considered enabled when at least one API key is configured.
 func (c *Config) IsAuthEnabled() bool {
-	return len(c.File.Auth.APIKeys) > 0
+	return len(c.Auth.APIKeys) > 0
 }
 
-// IsNamespaceDeclared reports whether the given namespace name is declared in
-// the config. Always returns true when no namespaces are declared (open mode).
+// IsNamespaceDeclared reports whether the given namespace is declared in the
+// config. Always returns true when no namespaces are declared (open mode).
 func (c *Config) IsNamespaceDeclared(ns string) bool {
-	if len(c.File.Namespaces) == 0 {
+	if len(c.Namespaces) == 0 {
 		return true
 	}
-	for _, n := range c.File.Namespaces {
+	for _, n := range c.Namespaces {
 		if n.Name == ns {
 			return true
 		}
@@ -173,10 +198,10 @@ func (c *Config) IsNamespaceDeclared(ns string) bool {
 	return false
 }
 
-// KeyHasNamespaceAccess reports whether the given API key exists and has access
-// to the given namespace. Returns false if the key is not found.
+// KeyHasNamespaceAccess reports whether the given API key exists and has
+// access to the given namespace.
 func (c *Config) KeyHasNamespaceAccess(key, namespace string) bool {
-	for _, k := range c.File.Auth.APIKeys {
+	for _, k := range c.Auth.APIKeys {
 		if k.Key != key {
 			continue
 		}
@@ -187,27 +212,4 @@ func (c *Config) KeyHasNamespaceAccess(key, namespace string) bool {
 		}
 	}
 	return false
-}
-
-// envStr returns the value of the environment variable named by key,
-// or fallback if the variable is not set or is empty.
-func envStr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// envInt returns the integer value of the environment variable named by key,
-// or fallback if the variable is not set, empty, or not a valid integer.
-func envInt(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
 }

@@ -1,29 +1,61 @@
-# memex server config — namespaces and API key auth
+# memex server configuration
 #
 # Pass this file with: memex -config config.yaml
+# If -config is not specified, memex looks for config.yaml in the working directory.
 #
-# All string values support ${ENV_VAR} expansion.
-# If this file is not provided (or api_keys is empty), auth is disabled
-# and all requests are allowed through without any key or namespace header.
+# All string values support ${ENV_VAR} expansion — use it for secrets.
 
+server:
+  port: 8080
+
+log:
+  format: console   # "console" or "json"
+  level: info       # "debug", "info", "warn", "error"
+
+database:
+  url: "${DATABASE_URL}"   # e.g. postgres://memex:memex@localhost:5432/memex
+
+embeddings:
+  base_url: "http://localhost:11434"   # any OpenAI-compatible API (Ollama, OpenAI, Groq...)
+  api_key: "ollama"                    # use any non-empty string for Ollama, real key for OpenAI
+  model: "nomic-embed-text"            # must be available in the provider
+  dim: 768                             # must match the model output
+
+worker:
+  pool_size: 3      # concurrent ingestion workers
+  max_retries: 3    # attempts per document before marking as failed
+
+chunker:
+  size: 512         # target chunk size in words
+  overlap: 64       # overlap between consecutive chunks in words
+
+search:
+  default_limit: 5  # default number of results returned when limit is not specified
+
+upload:
+  max_size_mb: 50   # maximum upload file size in MB
+
+# Namespaces declare the logical partitions this instance is aware of.
+# Requests for undeclared namespaces are rejected with 400.
+# Remove this section (or leave it empty) to disable namespace validation.
 namespaces:
-  - name: facturas
-  - name: contratos
+  - name: invoices
+  - name: contracts
   - name: general
 
+# auth.api_keys enables API key authentication.
+# When this list is empty (or the section is absent), auth is disabled and
+# all requests are allowed through without any key or namespace header.
 auth:
   api_keys:
-    # Admin key — access to all namespaces.
     - key: "${MEMEX_KEY_ADMIN}"
-      namespaces: ["*"]
+      namespaces: ["*"]          # access to all namespaces
 
-    # Service key — read/write only facturas and contratos.
     - key: "${MEMEX_KEY_SERVICE}"
       namespaces:
-        - facturas
-        - contratos
+        - invoices
+        - contracts
 
-    # Restricted key — only the general namespace.
     - key: "${MEMEX_KEY_GENERAL}"
       namespaces:
         - general

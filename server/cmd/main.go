@@ -59,75 +59,75 @@ func main() {
 // HTTP server with graceful shutdown, and blocks until a signal is received.
 func run() error {
 	// 1. Parse flags.
-	configPath := flag.String("config", "", "path to optional YAML config file (namespaces, auth)")
+	configPath := flag.String("config", "", "path to YAML config file (default: config.yaml in working directory)")
 	flag.Parse()
 
-	// 2. Load configuration from environment (and optional YAML file).
+	// 2. Load configuration from YAML file.
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	// 2. Initialise logger.
-	log := logger.New(cfg.LogFormat, cfg.LogLevel)
+	// 3. Initialise logger.
+	log := logger.New(cfg.Log.Format, cfg.Log.Level)
 	log.Info("memex starting",
-		"port", cfg.Port,
-		"log_format", cfg.LogFormat,
-		"openai_base_url", cfg.OpenAIBaseURL,
-		"openai_embedding_model", cfg.OpenAIEmbeddingModel,
+		"port", cfg.Server.Port,
+		"log_format", cfg.Log.Format,
+		"embeddings_base_url", cfg.Embeddings.BaseURL,
+		"embeddings_model", cfg.Embeddings.Model,
+		"auth_enabled", cfg.IsAuthEnabled(),
 	)
 
-	// 3. Connect to PostgreSQL and run migrations.
+	// 4. Connect to PostgreSQL and run migrations.
 	ctx := context.Background()
-	store, err := db.NewStore(ctx, cfg.DatabaseURL)
+	store, err := db.NewStore(ctx, cfg.Database.URL)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
 	defer store.Close()
 	log.Info("database connected and migrations applied")
 
-	// 4. Initialise the OpenAI-compatible embedder.
-	emb := embedder.New(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.OpenAIEmbeddingModel)
+	// 5. Initialise the OpenAI-compatible embedder.
+	emb := embedder.New(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey, cfg.Embeddings.Model)
 	if err := emb.Ping(ctx); err != nil {
 		return fmt.Errorf("embeddings API not reachable: %w", err)
 	}
 	log.Info("embeddings API reachable",
-		"base_url", cfg.OpenAIBaseURL,
-		"model", cfg.OpenAIEmbeddingModel,
+		"base_url", cfg.Embeddings.BaseURL,
+		"model", cfg.Embeddings.Model,
 	)
 
-	// 5. Initialise chunker.
-	chk := chunker.New(cfg.ChunkSize, cfg.ChunkOverlap)
+	// 6. Initialise chunker.
+	chk := chunker.New(cfg.Chunker.Size, cfg.Chunker.Overlap)
 
-	// 6. Start ingestion worker pool.
+	// 7. Start ingestion worker pool.
 	// Queue size is 10× the pool size to allow burst uploads.
-	queueSize := cfg.WorkerPoolSize * 10
-	worker := ingestion.NewWorker(store, emb, chk, log, cfg.WorkerPoolSize, cfg.WorkerMaxRetries, queueSize)
-	log.Info("ingestion worker pool started", "pool_size", cfg.WorkerPoolSize)
+	queueSize := cfg.Worker.PoolSize * 10
+	worker := ingestion.NewWorker(store, emb, chk, log, cfg.Worker.PoolSize, cfg.Worker.MaxRetries, queueSize)
+	log.Info("ingestion worker pool started", "pool_size", cfg.Worker.PoolSize)
 
-	// 7. Build HTTP router.
+	// 8. Build HTTP router.
 	routerCfg := api.RouterConfig{
 		Store:        store,
 		Embedder:     emb,
 		Worker:       worker,
 		Log:          log,
 		Config:       cfg,
-		MaxUploadMB:  cfg.MaxUploadSizeMB,
-		DefaultLimit: cfg.SearchDefaultLimit,
+		MaxUploadMB:  cfg.Upload.MaxSizeMB,
+		DefaultLimit: cfg.Search.DefaultLimit,
 		FrontendFS:   frontend,
 	}
 	router := api.NewRouter(routerCfg)
 
-	// 8. Start HTTP server.
+	// 9. Start HTTP server.
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      router,
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  30 * time.Second,
 	}
 
-	// Start server in background.
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("HTTP server listening", "addr", srv.Addr)
@@ -136,7 +136,7 @@ func run() error {
 		}
 	}()
 
-	// 9. Wait for shutdown signal or server error.
+	// 10. Wait for shutdown signal or server error.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -147,7 +147,7 @@ func run() error {
 		log.Info("shutdown signal received", "signal", sig)
 	}
 
-	// 10. Graceful shutdown: give in-flight requests up to 30s to complete.
+	// 11. Graceful shutdown: give in-flight requests up to 30s to complete.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

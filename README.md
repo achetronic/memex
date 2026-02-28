@@ -43,61 +43,30 @@ Open http://localhost:8080 for the UI or http://localhost:8080/swagger/index.htm
 
 ## Configuration
 
-### Environment variables
-
-All runtime tunables are set via environment variables. The docker-compose.yml passes
-them through from your shell, so you can set them in a `.env` file or export them.
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `8080` | HTTP server port |
-| `LOG_FORMAT` | `json` | `console` or `json` |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `DATABASE_URL` | *(required)* | PostgreSQL DSN (set automatically in docker-compose) |
-| `OPENAI_BASE_URL` | `http://localhost:11434` | Base URL of any OpenAI-compatible API (Ollama, OpenAI, Groq…) |
-| `OPENAI_API_KEY` | `ollama` | API key — use any non-empty string for Ollama, real key for OpenAI |
-| `OPENAI_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name — must be available in the provider |
-| `OPENAI_EMBEDDING_DIM` | `768` | Vector dimensions — must match the model output |
-| `WORKER_POOL_SIZE` | `3` | Concurrent ingestion workers |
-| `WORKER_MAX_RETRIES` | `3` | Max attempts per document before marking as failed |
-| `CHUNK_SIZE` | `512` | Target chunk size in words |
-| `CHUNK_OVERLAP` | `64` | Overlap between consecutive chunks in words |
-| `SEARCH_DEFAULT_LIMIT` | `5` | Default number of results returned by search |
-| `MAX_UPLOAD_SIZE_MB` | `50` | Maximum upload file size |
-
-### Config file (namespaces and auth)
-
-Namespaces and API key authentication are configured in an optional YAML file
-passed via the `-config` flag:
+All configuration lives in a single YAML file. Pass it with `-config`:
 
 ```bash
 memex -config /path/to/config.yaml
 ```
 
-All string values in the file support `${ENV_VAR}` expansion, so secrets never
-need to be written in plain text.
+If `-config` is not specified, memex looks for `config.yaml` in the working directory. If the file is not found, it exits with an error.
 
-```yaml
-namespaces:
-  - name: invoices
-  - name: contracts
-  - name: general
+All string values support `${ENV_VAR}` expansion — use it for secrets and environment-specific values without writing them in plain text.
 
-auth:
-  api_keys:
-    - key: "${MEMEX_KEY_ADMIN}"
-      namespaces: ["*"]          # access to all namespaces
-    - key: "${MEMEX_KEY_SERVICE}"
-      namespaces: ["invoices", "contracts"]
-    - key: "${MEMEX_KEY_GENERAL}"
-      namespaces: ["general"]
-```
+A fully documented example is in [`server/docs/config.yaml`](server/docs/config.yaml). The main sections are:
 
-A full example is in [`server/docs/config.yaml`](server/docs/config.yaml).
-
-When the file is not provided (or `auth.api_keys` is empty), auth is disabled
-and all requests are allowed through without any key or namespace header —
-useful for local and single-tenant deployments.
+| Section | Description |
+|---|---|
+| `server` | HTTP port |
+| `log` | Format (`console`/`json`) and level (`debug`, `info`, `warn`, `error`) |
+| `database` | PostgreSQL DSN |
+| `embeddings` | Base URL, API key, model name and dimensions |
+| `worker` | Pool size and max retries |
+| `chunker` | Chunk size and overlap (in words) |
+| `search` | Default result limit |
+| `upload` | Max file size in MB |
+| `namespaces` | Declared namespaces (requests to undeclared ones → 400) |
+| `auth.api_keys` | API keys and their allowed namespaces (empty → auth disabled) |
 
 ---
 
@@ -210,10 +179,7 @@ cd frontend && npm ci && npm run dev
 # In another terminal, generate swagger docs and start the Go server
 cd server
 swag init -g cmd/main.go -o docs/api/
-DATABASE_URL=postgres://memex:memex@localhost:5432/memex go run ./cmd/
-
-# With namespaces and auth:
-DATABASE_URL=postgres://memex:memex@localhost:5432/memex go run ./cmd/ -config docs/config.yaml
+go run ./cmd/ -config docs/config.yaml
 ```
 
 ### Regenerate Swagger docs

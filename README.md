@@ -108,14 +108,19 @@ Documents in `failed` status have their error message stored and visible via
 
 ---
 
-## MCP Integration *(roadmap)*
+## MCP Integration
 
-Memex is designed to be used as a knowledge base by AI agents via MCP servers.
-A companion `memex-mcp` is planned to expose these tools:
+Memex ships with a companion MCP server — [`memex-mcp`](mcp/README.md) — that
+exposes your knowledge base as tools for any AI agent that speaks the
+[Model Context Protocol](https://modelcontextprotocol.io).
 
-- `search_knowledge_base(query, limit)` → calls `POST /api/v1/search`
-- `upload_document(path)` → calls `POST /api/v1/documents`
-- `list_documents(status)` → calls `GET /api/v1/documents`
+Available tools: `search`, `list_documents`, `get_document`, `upload_document`,
+`delete_document`, `health`.
+
+Supports **stdio** (Claude Desktop, Cursor, VS Code) and **HTTP** (multi-agent
+deployments) transports, with optional JWT auth and per-rule CEL access policies.
+
+See [`mcp/README.md`](mcp/README.md) for full documentation.
 
 ---
 
@@ -155,11 +160,13 @@ swag init -g cmd/main.go -o docs/
 
 ## Release
 
-Releases are automated via GitHub Actions:
+Releases are automated via GitHub Actions. To publish a new release:
 
-- **Tag a version** (`git tag v1.0.0 && git push --tags`) to trigger:
-  - Binary builds for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
-  - Docker multi-arch image pushed to `ghcr.io/achetronic/memex`
+1. Go to [Releases](https://github.com/achetronic/memex/releases/new) and create a new release with the desired tag (e.g. `v1.0.0`).
+2. Publishing the release triggers:
+   - Binary builds for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
+   - Docker multi-arch image pushed to `ghcr.io/achetronic/memex`
+   - `memex-mcp` binaries and Docker image (`ghcr.io/achetronic/memex-mcp`) published alongside
 
 ---
 

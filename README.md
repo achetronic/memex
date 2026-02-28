@@ -209,7 +209,7 @@ cd frontend && npm ci && npm run dev
 
 # In another terminal, generate swagger docs and start the Go server
 cd server
-swag init -g cmd/main.go -o docs/
+swag init -g cmd/main.go -o docs/api/
 DATABASE_URL=postgres://memex:memex@localhost:5432/memex go run ./cmd/
 
 # With namespaces and auth:
@@ -220,7 +220,7 @@ DATABASE_URL=postgres://memex:memex@localhost:5432/memex go run ./cmd/ -config d
 
 ```bash
 cd server
-swag init -g cmd/main.go -o docs/
+swag init -g cmd/main.go -o docs/api/
 ```
 
 ---

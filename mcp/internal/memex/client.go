@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package memex provides a thin HTTP client for the Memex REST API.
-// It handles namespace routing via the X-Memex-Namespace header and keeps
-// the tool handlers free of HTTP concerns.
+// It handles namespace routing via X-Memex-Namespace and API key resolution
+// via X-Memex-Api-Key, keeping tool handlers free of HTTP concerns.
 package memex
 
 import (
@@ -24,39 +24,69 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"memex-mcp/api"
 )
 
 const (
-	// NamespaceHeader is the HTTP header used to scope requests to a namespace.
+	// NamespaceHeader scopes every Memex API request to a logical namespace.
 	NamespaceHeader = "X-Memex-Namespace"
+
+	// ApiKeyHeader is the header name used to authenticate against the Memex API.
+	ApiKeyHeader = "X-Memex-Api-Key"
 )
 
 // Client is a thin wrapper around http.Client that speaks to the Memex API.
 type Client struct {
 	baseURL          string
 	defaultNamespace string
+	auth             api.MemexAuthConfig
 	http             *http.Client
 }
 
 // NewClient creates a Memex API client.
 //
-// baseURL should be the root of the API (e.g. "http://localhost:8080").
-// defaultNamespace is sent as X-Memex-Namespace when no namespace is supplied
-// by the caller; pass an empty string to omit the header by default.
-func NewClient(baseURL, defaultNamespace string) *Client {
+// baseURL is the root of the API (e.g. "http://localhost:8080").
+// defaultNamespace is used when the caller does not provide one explicitly.
+// auth holds the API key resolution rules.
+func NewClient(baseURL, defaultNamespace string, auth api.MemexAuthConfig) *Client {
 	return &Client{
 		baseURL:          baseURL,
 		defaultNamespace: defaultNamespace,
-		http: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		auth:             auth,
+		http:             &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
-// do executes an HTTP request, optionally setting the namespace header, and
-// returns the response body as raw bytes. Callers are responsible for
-// unmarshalling the result.
-func (c *Client) do(method, path, namespace string, body interface{}) ([]byte, int, error) {
+// ResolveApiKey determines the API key to send to Memex for a given namespace
+// and forwarded header value, following this precedence:
+//
+//  1. forwardedKey — the value the agent passed in the configured forward header
+//  2. Exact namespace match in NamespaceKeys config
+//  3. Wildcard "*" entry in NamespaceKeys config
+//  4. Empty string — no credential sent (no-auth Memex instances)
+func (c *Client) ResolveApiKey(namespace, forwardedKey string) string {
+	if forwardedKey != "" {
+		return forwardedKey
+	}
+	if len(c.auth.NamespaceKeys) == 0 {
+		return ""
+	}
+	if key, ok := c.auth.NamespaceKeys[namespace]; ok {
+		return key
+	}
+	return c.auth.NamespaceKeys["*"]
+}
+
+// ForwardHeader returns the configured header name that agents use to pass an
+// API key through to the Memex API. Returns an empty string if not configured.
+func (c *Client) ForwardHeader() string {
+	return c.auth.ForwardHeader
+}
+
+// do executes an HTTP request against the Memex API, setting the namespace and
+// API key headers according to the resolved values provided by the caller.
+func (c *Client) do(method, path, namespace, apiKey string, body interface{}) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -75,13 +105,18 @@ func (c *Client) do(method, path, namespace string, body interface{}) ([]byte, i
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// Resolve the effective namespace: caller > default > none
+	// Namespace: caller > default > none
 	ns := namespace
 	if ns == "" {
 		ns = c.defaultNamespace
 	}
 	if ns != "" {
 		req.Header.Set(NamespaceHeader, ns)
+	}
+
+	// API key: resolved by caller via ResolveApiKey
+	if apiKey != "" {
+		req.Header.Set(ApiKeyHeader, apiKey)
 	}
 
 	resp, err := c.http.Do(req)
@@ -127,13 +162,13 @@ type ListDocumentsResponse struct {
 
 // ListDocuments returns all documents in the given namespace, optionally
 // filtered by status. Pass an empty status to return all.
-func (c *Client) ListDocuments(namespace, status string) ([]Document, error) {
+func (c *Client) ListDocuments(namespace, apiKey, status string) ([]Document, error) {
 	path := "/api/v1/documents"
 	if status != "" {
 		path += "?status=" + status
 	}
 
-	data, code, err := c.do(http.MethodGet, path, namespace, nil)
+	data, code, err := c.do(http.MethodGet, path, namespace, apiKey, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -149,8 +184,8 @@ func (c *Client) ListDocuments(namespace, status string) ([]Document, error) {
 }
 
 // GetDocument returns the detail and current ingestion status of a single document.
-func (c *Client) GetDocument(namespace, id string) (*Document, error) {
-	data, code, err := c.do(http.MethodGet, "/api/v1/documents/"+id, namespace, nil)
+func (c *Client) GetDocument(namespace, apiKey, id string) (*Document, error) {
+	data, code, err := c.do(http.MethodGet, "/api/v1/documents/"+id, namespace, apiKey, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -166,12 +201,10 @@ func (c *Client) GetDocument(namespace, id string) (*Document, error) {
 }
 
 // UploadDocument uploads a file to Memex using multipart/form-data.
-// It returns the created Document on success.
-func (c *Client) UploadDocument(namespace string, filename string, content []byte) (*Document, error) {
+func (c *Client) UploadDocument(namespace, apiKey, filename string, content []byte) (*Document, error) {
 	var buf bytes.Buffer
 	boundary := "memex-mcp-boundary"
 
-	// Manual multipart construction to avoid importing mime/multipart in tools
 	buf.WriteString("--" + boundary + "\r\n")
 	buf.WriteString(fmt.Sprintf(`Content-Disposition: form-data; name="file"; filename="%s"`, filename) + "\r\n")
 	buf.WriteString("Content-Type: application/octet-stream\r\n\r\n")
@@ -190,6 +223,9 @@ func (c *Client) UploadDocument(namespace string, filename string, content []byt
 	}
 	if ns != "" {
 		req.Header.Set(NamespaceHeader, ns)
+	}
+	if apiKey != "" {
+		req.Header.Set(ApiKeyHeader, apiKey)
 	}
 
 	resp, err := c.http.Do(req)
@@ -211,8 +247,8 @@ func (c *Client) UploadDocument(namespace string, filename string, content []byt
 }
 
 // DeleteDocument removes a document and all its chunks from the given namespace.
-func (c *Client) DeleteDocument(namespace, id string) error {
-	data, code, err := c.do(http.MethodDelete, "/api/v1/documents/"+id, namespace, nil)
+func (c *Client) DeleteDocument(namespace, apiKey, id string) error {
+	data, code, err := c.do(http.MethodDelete, "/api/v1/documents/"+id, namespace, apiKey, nil)
 	if err != nil {
 		return err
 	}
@@ -244,10 +280,11 @@ type SearchResponse struct {
 }
 
 // Search performs a semantic search in the given namespace.
-func (c *Client) Search(namespace, query string, limit int) ([]SearchResult, error) {
-	payload := SearchRequest{Query: query, Limit: limit}
-
-	data, code, err := c.do(http.MethodPost, "/api/v1/search", namespace, payload)
+func (c *Client) Search(namespace, apiKey, query string, limit int) ([]SearchResult, error) {
+	data, code, err := c.do(http.MethodPost, "/api/v1/search", namespace, apiKey, SearchRequest{
+		Query: query,
+		Limit: limit,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +310,7 @@ type HealthResponse struct {
 
 // Health returns the current health of the upstream Memex instance.
 func (c *Client) Health() (*HealthResponse, error) {
-	data, code, err := c.do(http.MethodGet, "/api/v1/health", "", nil)
+	data, code, err := c.do(http.MethodGet, "/api/v1/health", "", "", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -31,10 +31,10 @@ import (
 
 // ToolsManagerDependencies groups everything the ToolsManager needs.
 type ToolsManagerDependencies struct {
-	AppCtx       *globals.ApplicationContext
-	McpServer    *server.MCPServer
-	Middlewares  []middlewares.ToolMiddleware
-	MemexClient  *memex.Client
+	AppCtx      *globals.ApplicationContext
+	McpServer   *server.MCPServer
+	Middlewares []middlewares.ToolMiddleware
+	MemexClient *memex.Client
 }
 
 // ToolsManager registers and owns all MCP tools.
@@ -56,15 +56,20 @@ func (tm *ToolsManager) wrapWithMiddlewares(handler server.ToolHandlerFunc) serv
 	return handler
 }
 
-// strArg extracts a named string argument from a CallToolRequest.
-// Returns an empty string if the argument is absent or not a string.
+// ─── Argument helpers ────────────────────────────────────────────────────────
+
+// strArg extracts a named string argument from a tool call. Returns "" if absent.
 func strArg(request mcp.CallToolRequest, name string) string {
-	v, _ := request.Params.Arguments.(map[string]interface{})[name].(string)
+	args, ok := request.Params.Arguments.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	v, _ := args[name].(string)
 	return v
 }
 
-// intArg extracts a named integer argument (stored as float64 by JSON) from a
-// CallToolRequest. Returns the fallback value if the argument is absent.
+// intArg extracts a named integer argument (JSON numbers arrive as float64).
+// Returns fallback if absent or not a number.
 func intArg(request mcp.CallToolRequest, name string, fallback int) int {
 	args, ok := request.Params.Arguments.(map[string]interface{})
 	if !ok {
@@ -77,7 +82,7 @@ func intArg(request mcp.CallToolRequest, name string, fallback int) int {
 	return int(v)
 }
 
-// jsonResult serialises v as indented JSON and returns a text tool result.
+// jsonResult serialises v as indented JSON and wraps it in a text tool result.
 func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -86,17 +91,48 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// resolveApiKey extracts the forwarded API key from the context (injected by
+// the HTTP middleware) and delegates to the client's resolution logic.
+//
+// Resolution order:
+//  1. Value of the configured forward_header in the agent's HTTP request
+//  2. Static key for the namespace in config (namespace_keys)
+//  3. Static key for "*" wildcard in config (namespace_keys)
+//  4. Empty string — no credential sent
+func (tm *ToolsManager) resolveApiKey(ctx context.Context, namespace string) string {
+	var forwarded string
+
+	fwdHeader := tm.dependencies.MemexClient.ForwardHeader()
+	if fwdHeader != "" {
+		if headers := middlewares.ForwardedHeadersFromContext(ctx); headers != nil {
+			forwarded = headers.Get(fwdHeader)
+		}
+	}
+
+	return tm.dependencies.MemexClient.ResolveApiKey(namespace, forwarded)
+}
+
+// baseName returns the last path segment of a file path (cross-platform).
+func baseName(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[i+1:]
+		}
+	}
+	return path
+}
+
+// ─── Tool registration ───────────────────────────────────────────────────────
+
 // AddTools registers every Memex MCP tool on the server.
 func (tm *ToolsManager) AddTools() {
 
-	// ── Documents ────────────────────────────────────────────────────────────
-
-	// list_documents — list documents in a namespace
+	// list_documents
 	tm.dependencies.McpServer.AddTool(
 		mcp.NewTool("list_documents",
 			mcp.WithDescription("List all documents in the given namespace. Optionally filter by ingestion status."),
 			mcp.WithString("namespace",
-				mcp.Description("Namespace to scope the request to. Sent as X-Memex-Namespace. Falls back to the default configured namespace."),
+				mcp.Description("Namespace to scope the request to (sent as X-Memex-Namespace). Falls back to the default configured namespace."),
 			),
 			mcp.WithString("status",
 				mcp.Description("Filter by status: pending, processing, completed, failed. Leave empty for all."),
@@ -105,7 +141,7 @@ func (tm *ToolsManager) AddTools() {
 		tm.wrapWithMiddlewares(tm.HandleListDocuments),
 	)
 
-	// get_document — get detail and status of a single document
+	// get_document
 	tm.dependencies.McpServer.AddTool(
 		mcp.NewTool("get_document",
 			mcp.WithDescription("Get the detail and current ingestion status of a single document."),
@@ -120,10 +156,10 @@ func (tm *ToolsManager) AddTools() {
 		tm.wrapWithMiddlewares(tm.HandleGetDocument),
 	)
 
-	// upload_document — upload a file from a local path
+	// upload_document
 	tm.dependencies.McpServer.AddTool(
 		mcp.NewTool("upload_document",
-			mcp.WithDescription("Upload a local file to Memex for ingestion. The file is read from the given path on the filesystem where memex-mcp is running."),
+			mcp.WithDescription("Upload a local file to Memex for ingestion. The file is read from the path on the filesystem where memex-mcp is running."),
 			mcp.WithString("path",
 				mcp.Required(),
 				mcp.Description("Absolute path to the file to upload."),
@@ -135,7 +171,7 @@ func (tm *ToolsManager) AddTools() {
 		tm.wrapWithMiddlewares(tm.HandleUploadDocument),
 	)
 
-	// delete_document — delete a document and all its chunks
+	// delete_document
 	tm.dependencies.McpServer.AddTool(
 		mcp.NewTool("delete_document",
 			mcp.WithDescription("Delete a document and all its associated chunks from Memex."),
@@ -150,9 +186,7 @@ func (tm *ToolsManager) AddTools() {
 		tm.wrapWithMiddlewares(tm.HandleDeleteDocument),
 	)
 
-	// ── Search ───────────────────────────────────────────────────────────────
-
-	// search — semantic search over a namespace
+	// search
 	tm.dependencies.McpServer.AddTool(
 		mcp.NewTool("search",
 			mcp.WithDescription("Perform a semantic search over the documents in a namespace. Returns the most relevant chunks with their source document and similarity score."),
@@ -170,9 +204,7 @@ func (tm *ToolsManager) AddTools() {
 		tm.wrapWithMiddlewares(tm.HandleSearch),
 	)
 
-	// ── Health ───────────────────────────────────────────────────────────────
-
-	// health — check the upstream Memex instance
+	// health
 	tm.dependencies.McpServer.AddTool(
 		mcp.NewTool("health",
 			mcp.WithDescription("Check the health of the upstream Memex instance (database and embeddings API connectivity)."),
@@ -184,11 +216,12 @@ func (tm *ToolsManager) AddTools() {
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 // HandleListDocuments handles the list_documents tool call.
-func (tm *ToolsManager) HandleListDocuments(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (tm *ToolsManager) HandleListDocuments(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	namespace := strArg(request, "namespace")
 	status := strArg(request, "status")
+	apiKey := tm.resolveApiKey(ctx, namespace)
 
-	docs, err := tm.dependencies.MemexClient.ListDocuments(namespace, status)
+	docs, err := tm.dependencies.MemexClient.ListDocuments(namespace, apiKey, status)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("listing documents: %v", err)), nil
 	}
@@ -196,11 +229,12 @@ func (tm *ToolsManager) HandleListDocuments(_ context.Context, request mcp.CallT
 }
 
 // HandleGetDocument handles the get_document tool call.
-func (tm *ToolsManager) HandleGetDocument(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (tm *ToolsManager) HandleGetDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id := strArg(request, "id")
 	namespace := strArg(request, "namespace")
+	apiKey := tm.resolveApiKey(ctx, namespace)
 
-	doc, err := tm.dependencies.MemexClient.GetDocument(namespace, id)
+	doc, err := tm.dependencies.MemexClient.GetDocument(namespace, apiKey, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("getting document: %v", err)), nil
 	}
@@ -209,7 +243,7 @@ func (tm *ToolsManager) HandleGetDocument(_ context.Context, request mcp.CallToo
 
 // HandleUploadDocument handles the upload_document tool call.
 // It reads the file from the local filesystem and streams it to the Memex API.
-func (tm *ToolsManager) HandleUploadDocument(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (tm *ToolsManager) HandleUploadDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	path := strArg(request, "path")
 	namespace := strArg(request, "namespace")
 
@@ -222,10 +256,9 @@ func (tm *ToolsManager) HandleUploadDocument(_ context.Context, request mcp.Call
 		return mcp.NewToolResultError(fmt.Sprintf("reading file %q: %v", path, err)), nil
 	}
 
-	// Use the base filename as the document name in Memex
-	filename := fmt.Sprintf("%s", filepath(path))
+	apiKey := tm.resolveApiKey(ctx, namespace)
 
-	doc, err := tm.dependencies.MemexClient.UploadDocument(namespace, filename, content)
+	doc, err := tm.dependencies.MemexClient.UploadDocument(namespace, apiKey, baseName(path), content)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("uploading document: %v", err)), nil
 	}
@@ -233,27 +266,29 @@ func (tm *ToolsManager) HandleUploadDocument(_ context.Context, request mcp.Call
 }
 
 // HandleDeleteDocument handles the delete_document tool call.
-func (tm *ToolsManager) HandleDeleteDocument(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (tm *ToolsManager) HandleDeleteDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id := strArg(request, "id")
 	namespace := strArg(request, "namespace")
+	apiKey := tm.resolveApiKey(ctx, namespace)
 
-	if err := tm.dependencies.MemexClient.DeleteDocument(namespace, id); err != nil {
+	if err := tm.dependencies.MemexClient.DeleteDocument(namespace, apiKey, id); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("deleting document: %v", err)), nil
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("document %q deleted successfully", id)), nil
 }
 
 // HandleSearch handles the search tool call.
-func (tm *ToolsManager) HandleSearch(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (tm *ToolsManager) HandleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query := strArg(request, "query")
 	namespace := strArg(request, "namespace")
 	limit := intArg(request, "limit", 5)
+	apiKey := tm.resolveApiKey(ctx, namespace)
 
 	if query == "" {
 		return mcp.NewToolResultError("query is required"), nil
 	}
 
-	results, err := tm.dependencies.MemexClient.Search(namespace, query, limit)
+	results, err := tm.dependencies.MemexClient.Search(namespace, apiKey, query, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("searching: %v", err)), nil
 	}
@@ -267,14 +302,4 @@ func (tm *ToolsManager) HandleHealth(_ context.Context, _ mcp.CallToolRequest) (
 		return mcp.NewToolResultError(fmt.Sprintf("health check: %v", err)), nil
 	}
 	return jsonResult(h)
-}
-
-// filepath returns the base name of a file path (last segment after the last slash).
-func filepath(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' || path[i] == '\\' {
-			return path[i+1:]
-		}
-	}
-	return path
 }

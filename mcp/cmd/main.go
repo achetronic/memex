@@ -39,6 +39,7 @@ func main() {
 	memexClient := memex.NewClient(
 		appCtx.Config.Memex.BaseURL,
 		appCtx.Config.Memex.DefaultNamespace,
+		appCtx.Config.Memex.Auth,
 	)
 
 	// 2. Initialise middlewares
@@ -90,7 +91,17 @@ func main() {
 		)
 
 		mux := http.NewServeMux()
-		mux.Handle("/mcp", accessLogsMw.Middleware(jwtValidationMw.Middleware(httpServer)))
+
+		// headerForwardMw injects the incoming HTTP headers into the context
+		// so tool handlers can read forwarded values (e.g. X-Memex-Api-Key).
+		headerForwardMw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx := middlewares.WithForwardedHeaders(r.Context(), r.Header)
+				next.ServeHTTP(w, r.WithContext(ctx))
+			})
+		}
+
+		mux.Handle("/mcp", headerForwardMw(accessLogsMw.Middleware(jwtValidationMw.Middleware(httpServer))))
 
 		if appCtx.Config.OAuthAuthorizationServer.Enabled {
 			mux.Handle(

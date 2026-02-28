@@ -35,6 +35,28 @@ type ServerConfig struct {
 	Transport ServerTransportConfig `yaml:"transport,omitempty"`
 }
 
+// MemexAuthConfig controls how memex-mcp authenticates against the Memex API.
+//
+// Resolution order for each request (first non-empty value wins):
+//  1. Header forwarded from the agent request (ForwardHeader)
+//  2. Static API key configured for the specific namespace (NamespaceKeys)
+//  3. Static API key configured for the "*" wildcard namespace (NamespaceKeys)
+//  4. No credential — compatible with Memex instances that have no auth yet.
+type MemexAuthConfig struct {
+	// ForwardHeader is the name of the HTTP header the agent sends to memex-mcp
+	// that should be forwarded verbatim to the Memex API as its auth header.
+	// Example: "X-Memex-Api-Key"
+	ForwardHeader string `yaml:"forward_header,omitempty"`
+
+	// NamespaceKeys maps namespace names to their static API keys.
+	// Use "*" as the key for a catch-all fallback.
+	// Example:
+	//   namespace_keys:
+	//     facturas: "key-abc123"
+	//     "*":      "key-default"
+	NamespaceKeys map[string]string `yaml:"namespace_keys,omitempty"`
+}
+
 // MemexConfig holds the connection details for the upstream Memex REST API.
 type MemexConfig struct {
 	// BaseURL is the root URL of the Memex API, e.g. "http://localhost:8080".
@@ -43,6 +65,10 @@ type MemexConfig struct {
 	// DefaultNamespace is sent as X-Memex-Namespace when the caller does not
 	// provide one explicitly. Leave empty to send no header by default.
 	DefaultNamespace string `yaml:"default_namespace,omitempty"`
+
+	// Auth configures how memex-mcp authenticates against the Memex API.
+	// All fields are optional — omit the section entirely for no-auth setups.
+	Auth MemexAuthConfig `yaml:"auth,omitempty"`
 }
 
 // AccessLogsConfig controls which HTTP headers are logged or redacted.

@@ -1,0 +1,334 @@
+# memex-mcp
+
+MCP server for [Memex](https://github.com/achetronic/memex) — expose your
+self-hosted RAG knowledge base as a set of tools for any AI agent that speaks
+the Model Context Protocol.
+
+---
+
+## Table of contents
+
+1. [Overview](#overview)
+2. [Tools](#tools)
+3. [Transport modes](#transport-modes)
+   - [stdio](#stdio)
+   - [HTTP (Streamable HTTP)](#http-streamable-http)
+4. [Configuration reference](#configuration-reference)
+   - [server](#server)
+   - [memex](#memex)
+   - [memex.auth — API key resolution](#memexauth--api-key-resolution)
+   - [middleware.access_logs](#middlewareaccess_logs)
+   - [middleware.jwt](#middlewarejwt)
+   - [policies.tools](#policiesstools)
+   - [policies.namespaces](#policiesnamespaces)
+   - [oauth_authorization_server](#oauth_authorization_server)
+   - [oauth_protected_resource](#oauth_protected_resource)
+5. [Running memex-mcp](#running-memex-mcp)
+   - [Binary](#binary)
+   - [Docker](#docker)
+   - [Claude Desktop](#claude-desktop)
+6. [Namespaces](#namespaces)
+7. [API key authentication](#api-key-authentication)
+8. [JWT auth and policies](#jwt-auth-and-policies)
+
+---
+
+## Overview
+
+memex-mcp sits between your AI agents and your Memex instance. It translates
+MCP tool calls into Memex REST API requests, handles namespace routing via the
+`X-Memex-Namespace` header, and optionally enforces JWT-based access control
+and per-namespace API key resolution.
+
+```
+Agent ──MCP──▶ memex-mcp ──HTTP──▶ Memex API ──▶ PostgreSQL + pgvector
+```
+
+---
+
+## Tools
+
+| Tool | Description |
+|---|---|
+| `search` | Semantic search over documents in a namespace |
+| `list_documents` | List documents, optionally filtered by ingestion status |
+| `get_document` | Get detail and ingestion status of a single document |
+| `upload_document` | Upload a local file to Memex for ingestion |
+| `delete_document` | Delete a document and all its chunks |
+| `health` | Check connectivity of the upstream Memex instance |
+
+All tools except `health` accept an optional `namespace` parameter. When
+omitted, the `memex.default_namespace` from the config is used. If that is
+also empty, no namespace header is sent.
+
+---
+
+## Transport modes
+
+### stdio
+
+The agent launches memex-mcp as a subprocess and communicates over stdin/stdout.
+No network port is opened. Ideal for local integrations (Claude Desktop, Cursor,
+VS Code extensions).
+
+```bash
+memex-mcp -config config.yaml
+```
+
+Config `server.transport.type` must be `"stdio"` (or omitted — stdio is the default).
+
+### HTTP (Streamable HTTP)
+
+memex-mcp listens on a TCP port and exposes a single `/mcp` endpoint using the
+[Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http).
+Suitable for multi-agent or multi-tenant deployments where agents connect over
+the network.
+
+```bash
+memex-mcp -config config.yaml
+# Listening on :8090/mcp
+```
+
+Config `server.transport.type` must be `"http"`.
+
+---
+
+## Configuration reference
+
+All configuration is in a YAML file passed via `-config <path>`.
+Environment variables in the form `${VAR}` are expanded at load time.
+
+### server
+
+```yaml
+server:
+  name: "memex-mcp"
+  version: "0.1.0"
+  transport:
+    type: "stdio"       # "stdio" or "http"
+    http:
+      host: ":8090"     # only used when type is "http"
+```
+
+### memex
+
+```yaml
+memex:
+  base_url: "http://localhost:8080"   # required — root URL of the Memex API
+  default_namespace: ""               # optional — used when no namespace is passed per-call
+```
+
+### memex.auth — API key resolution
+
+When the Memex API requires authentication, memex-mcp resolves the API key for
+each request using this precedence (first non-empty value wins):
+
+1. **Forwarded header** — the agent sends the configured header to memex-mcp and
+   it is forwarded verbatim to Memex. Requires JWT auth to prevent abuse.
+2. **Static key for the namespace** — looked up in `namespace_keys`.
+3. **Static key for `"*"`** — catch-all fallback in `namespace_keys`.
+4. **No credential** — compatible with Memex instances that have no auth yet.
+
+```yaml
+memex:
+  base_url: "http://localhost:8080"
+  auth:
+    forward_header: "X-Memex-Api-Key"   # header name agents use to pass their key
+    namespace_keys:
+      invoices:  "${MEMEX_KEY_INVOICES}"
+      contracts: "${MEMEX_KEY_CONTRACTS}"
+      "*":       "${MEMEX_KEY_DEFAULT}"  # catch-all
+```
+
+### middleware.access_logs
+
+```yaml
+middleware:
+  access_logs:
+    excluded_headers:
+      - "Accept"
+      - "Accept-Encoding"
+    redacted_headers:
+      - "Authorization"
+      - "Cookie"
+```
+
+### middleware.jwt
+
+Only applies to HTTP transport. When `enabled: false` (or the section is
+omitted), all requests are allowed through.
+
+```yaml
+middleware:
+  jwt:
+    enabled: true
+    jwks_uri: "https://your-idp.com/.well-known/jwks.json"
+    cache_interval: 5m
+    allow_conditions:
+      - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
+```
+
+`allow_conditions` are [CEL](https://cel.dev) expressions evaluated against the
+decoded JWT payload. A request is allowed if **any** condition evaluates to true.
+
+### policies.tools
+
+Controls which tools each JWT identity can call. The first matching policy wins.
+Supports exact names and prefix wildcards (`"search_*"`).
+
+```yaml
+policies:
+  tools:
+    - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
+      allowed_tools: ["*"]
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:write")'
+      allowed_tools: ["upload_document", "delete_document", "list_documents", "get_document", "search", "health"]
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
+      allowed_tools: ["list_documents", "get_document", "search", "health"]
+```
+
+### policies.namespaces
+
+Controls which namespaces each JWT identity can access. Evaluated after the tool
+policy. Use `"*"` to grant access to all namespaces.
+
+```yaml
+policies:
+  namespaces:
+    - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
+      allowed_namespaces: ["*"]
+    - expression: 'has(payload.sub)'
+      allowed_namespaces: ["invoices", "contracts"]
+```
+
+### oauth_authorization_server
+
+Serves `/.well-known/oauth-authorization-server` by proxying the issuer's
+OpenID configuration. Required by some MCP clients for OAuth discovery.
+
+```yaml
+oauth_authorization_server:
+  enabled: true
+  issuer_uri: "https://your-idp.com"
+```
+
+### oauth_protected_resource
+
+Serves `/.well-known/oauth-protected-resource` from the configured values.
+
+```yaml
+oauth_protected_resource:
+  enabled: true
+  resource: "https://your-memex-mcp.example.com"
+  auth_servers:
+    - "https://your-idp.com"
+  jwks_uri: "https://your-idp.com/.well-known/jwks.json"
+  scopes_supported: ["memex:read", "memex:write"]
+  bearer_methods_supported: ["header"]
+  resource_name: "Memex MCP Server"
+  resource_documentation: "https://github.com/achetronic/memex"
+```
+
+---
+
+## Running memex-mcp
+
+### Binary
+
+Download the binary for your platform from the [releases page](https://github.com/achetronic/memex/releases).
+
+```bash
+# stdio mode (default)
+memex-mcp -config config.yaml
+
+# HTTP mode
+memex-mcp -config config-http.yaml
+```
+
+Example config files are in [`docs/`](docs/).
+
+### Docker
+
+```bash
+docker run --rm \
+  -v /path/to/config.yaml:/config/config.yaml \
+  ghcr.io/achetronic/memex-mcp:latest
+```
+
+For HTTP mode, expose the port:
+
+```bash
+docker run --rm \
+  -p 8090:8090 \
+  -v /path/to/config-http.yaml:/config/config.yaml \
+  ghcr.io/achetronic/memex-mcp:latest
+```
+
+### Claude Desktop
+
+Add memex-mcp to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "memex": {
+      "command": "/path/to/memex-mcp",
+      "args": ["-config", "/path/to/config.yaml"]
+    }
+  }
+}
+```
+
+---
+
+## Namespaces
+
+Namespaces are logical partitions within a Memex instance. They are forwarded
+as the `X-Memex-Namespace` HTTP header on every API request.
+
+> **Note:** namespace support in the Memex API is not yet implemented. The
+> header is sent now so that memex-mcp is ready when it lands — existing
+> deployments without namespace support will simply ignore the header.
+
+You can set a namespace per tool call:
+
+```json
+{ "tool": "search", "arguments": { "query": "invoice terms", "namespace": "invoices" } }
+```
+
+Or configure a default that applies when no namespace is supplied:
+
+```yaml
+memex:
+  default_namespace: "invoices"
+```
+
+---
+
+## API key authentication
+
+> **Note:** API key authentication in the Memex API is not yet implemented.
+> The resolution logic is in place so that no changes to memex-mcp will be
+> needed when it lands.
+
+memex-mcp resolves the Memex API key for each request in this order:
+
+1. The value of `memex.auth.forward_header` from the agent's incoming HTTP
+   request — useful when each agent manages its own key.
+2. The static key configured in `memex.auth.namespace_keys` for the specific
+   namespace.
+3. The static key configured for `"*"` in `memex.auth.namespace_keys`.
+4. No credential (no-auth Memex instances).
+
+The forwarded-header approach requires HTTP transport with JWT auth enabled,
+otherwise any caller could inject an arbitrary key.
+
+---
+
+## JWT auth and policies
+
+JWT validation and policy enforcement only apply to the **HTTP transport**.
+In stdio mode all calls are trusted — access control is delegated to the
+operating system (only processes that can launch memex-mcp can use it).
+
+For a full HTTP + JWT + policies example see [`docs/config-http.yaml`](docs/config-http.yaml).

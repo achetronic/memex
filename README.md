@@ -1,15 +1,19 @@
-# memex
+<div align="center">
+  <img src="docs/images/header.svg" alt="Memex" width="860"/>
+</div>
 
-Self-hosted, generic RAG (Retrieval-Augmented Generation) backend powered by
-PostgreSQL + pgvector and Ollama. Upload documents via a web UI or REST API,
-index them as vector embeddings, and query them semantically.
+# Memex
+
+Memex is a self-hosted RAG (Retrieval-Augmented Generation) system built on PostgreSQL + pgvector.
+Feed it your documents, query them in plain language, and plug the results into any AI agent or workflow.
+No cloud dependency, no vendor lock-in — just your data, your server, and an OpenAI-compatible embeddings API (Ollama, OpenAI, Groq…).
 
 ---
 
 ## Features
 
 - **Multi-format ingestion**: PDF, TXT, Markdown, DOCX, ODT, HTML, CSV, JSON, YAML, TOML, XML, RTF, EML
-- **Semantic search**: cosine similarity via pgvector, powered by Ollama embeddings
+- **Semantic search**: cosine similarity via pgvector, powered by any OpenAI-compatible embeddings API
 - **Resilient worker**: configurable pool size, exponential backoff retries, graceful failure reporting
 - **REST API**: fully documented with Swagger UI at `/swagger/index.html`
 - **Vue 3 frontend**: upload, manage and search documents — served by the Go binary itself
@@ -24,8 +28,8 @@ index them as vector embeddings, and query them semantically.
 git clone https://github.com/achetronic/memex
 cd memex
 
-# Set your Ollama URL if it's not on localhost
-export OLLAMA_URL=http://your-ollama-host:11434
+# Set your embeddings API base URL if it's not on localhost (e.g. Ollama)
+export OPENAI_BASE_URL=http://your-ollama-host:11434
 
 # Start everything
 docker compose up -d
@@ -88,7 +92,7 @@ Search request body:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/health` | Returns status of database and Ollama |
+| `GET` | `/api/v1/health` | Returns status of database and embeddings API |
 
 ---
 
@@ -104,10 +108,10 @@ Documents in `failed` status have their error message stored and visible via
 
 ---
 
-## MCP Integration
+## MCP Integration *(roadmap)*
 
-memex is designed to be used as a knowledge base by AI agents via MCP servers.
-A companion `memex-mcp` can expose these tools:
+Memex is designed to be used as a knowledge base by AI agents via MCP servers.
+A companion `memex-mcp` is planned to expose these tools:
 
 - `search_knowledge_base(query, limit)` → calls `POST /api/v1/search`
 - `upload_document(path)` → calls `POST /api/v1/documents`
@@ -123,7 +127,7 @@ A companion `memex-mcp` can expose these tools:
 - Node 20+
 - Docker + Docker Compose
 - [swag](https://github.com/swaggo/swag): `go install github.com/swaggo/swag/cmd/swag@latest`
-- Ollama with `nomic-embed-text` pulled: `ollama pull nomic-embed-text`
+- An OpenAI-compatible embeddings API (e.g. Ollama with `nomic-embed-text`: `ollama pull nomic-embed-text`)
 
 ### Run locally
 
@@ -161,4 +165,4 @@ Releases are automated via GitHub Actions:
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](LICENSE)

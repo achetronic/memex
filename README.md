@@ -199,7 +199,7 @@ Releases are automated via GitHub Actions. To publish a new release:
 2. Publishing the release triggers:
    - Binary builds for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
    - Docker multi-arch image pushed to `ghcr.io/achetronic/memex`
-   - `memex-mcp` binaries and Docker image (`ghcr.io/achetronic/memex-mcp`) published alongside
+   - `memex-mcp` binaries and Docker image (`ghcr.io/achetronic/memex/memex-mcp`) published alongside
 
 ---
 

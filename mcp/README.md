@@ -254,7 +254,7 @@ Example config files are in [`docs/`](docs/).
 ```bash
 docker run --rm \
   -v /path/to/config.yaml:/config/config.yaml \
-  ghcr.io/achetronic/memex-mcp:latest
+  ghcr.io/achetronic/memex/memex-mcp:latest
 ```
 
 For HTTP mode, expose the port:
@@ -263,7 +263,7 @@ For HTTP mode, expose the port:
 docker run --rm \
   -p 8090:8090 \
   -v /path/to/config-http.yaml:/config/config.yaml \
-  ghcr.io/achetronic/memex-mcp:latest
+  ghcr.io/achetronic/memex/memex-mcp:latest
 ```
 
 ### Claude Desktop

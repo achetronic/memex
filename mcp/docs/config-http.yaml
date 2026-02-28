@@ -42,15 +42,18 @@ middleware:
       - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
 
 # Tool + namespace access policies based on JWT claims.
-# First matching policy wins — order matters.
+# Rules are evaluated in order — the first matching expression wins.
+# Within a matching rule, allowed_tools AND allowed_namespaces are both enforced.
+# An empty list means no restriction on that dimension.
 policies:
-  tools:
-    # Admins can use all tools
+  rules:
+    # Admins can use all tools across all namespaces.
     - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
       allowed_tools: ["*"]
+      allowed_namespaces: ["*"]
 
-    # Agents with memex:write scope can upload and delete
-    - expression: 'has(payload.scope) && payload.scope.contains("memex:write")'
+    # Agents with memex:write scope can write to their own namespace (sub claim).
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:write") && has(payload.sub)'
       allowed_tools:
         - "upload_document"
         - "delete_document"
@@ -58,22 +61,16 @@ policies:
         - "get_document"
         - "search"
         - "health"
+      allowed_namespaces:
+        - "${payload.sub}"   # evaluated at runtime by the policy engine
 
-    # Agents with memex:read scope can only read and search
-    - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
+    # Agents with memex:read scope can only read their own namespace.
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:read") && has(payload.sub)'
       allowed_tools:
         - "list_documents"
         - "get_document"
         - "search"
         - "health"
-
-  namespaces:
-    # Admins can access any namespace
-    - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
-      allowed_namespaces: ["*"]
-
-    # Agents can only access their own namespace (sub claim = namespace)
-    - expression: 'has(payload.sub)'
       allowed_namespaces:
         - "${payload.sub}"   # evaluated at runtime by the policy engine
 

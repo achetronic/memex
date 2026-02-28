@@ -26,18 +26,13 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// CompiledToolPolicy holds a precompiled CEL program and the list of tools it
-// grants access to when the expression evaluates to true.
-type CompiledToolPolicy struct {
-	Program      cel.Program
-	AllowedTools []string
-}
-
-// CompiledNamespacePolicy holds a precompiled CEL program and the list of
-// namespaces it grants access to when the expression evaluates to true.
-type CompiledNamespacePolicy struct {
-	Program            cel.Program
-	AllowedNamespaces  []string
+// CompiledPolicy holds a precompiled CEL program alongside the tool and
+// namespace constraints it enforces when the expression evaluates to true.
+// Empty slices mean "no restriction on that dimension".
+type CompiledPolicy struct {
+	Program           cel.Program
+	AllowedTools      []string
+	AllowedNamespaces []string
 }
 
 // ToolPolicyMiddlewareDependencies carries the dependencies required to build
@@ -46,14 +41,21 @@ type ToolPolicyMiddlewareDependencies struct {
 	AppCtx *globals.ApplicationContext
 }
 
-// ToolPolicyMiddleware enforces tool-level and namespace-level access control
-// based on JWT claims evaluated against CEL expressions configured in the
-// policies section of the YAML config. It also validates that the namespace
-// parameter supplied by the caller is allowed by at least one namespace policy.
+// ToolPolicyMiddleware enforces access control based on JWT claims evaluated
+// against CEL expressions configured in the policies.rules section of the
+// YAML config. Each rule matches a set of tools AND a set of namespaces; both
+// dimensions must be satisfied for the request to proceed.
+//
+// Evaluation logic:
+//   - Rules are evaluated in order; the first whose CEL expression matches wins.
+//   - Within the matching rule, the tool must be in allowed_tools (if set) AND
+//     the namespace must be in allowed_namespaces (if set).
+//   - An empty allowed_tools or allowed_namespaces means no restriction on that
+//     dimension.
+//   - If no rule matches, the request is denied.
 type ToolPolicyMiddleware struct {
-	dependencies         ToolPolicyMiddlewareDependencies
-	compiledToolPolicies []CompiledToolPolicy
-	compiledNsPolicies   []CompiledNamespacePolicy
+	dependencies    ToolPolicyMiddlewareDependencies
+	compiledPolicies []CompiledPolicy
 }
 
 // NewToolPolicyMiddleware compiles all CEL expressions from the configuration
@@ -69,47 +71,32 @@ func NewToolPolicyMiddleware(deps ToolPolicyMiddlewareDependencies) (*ToolPolicy
 		return nil, fmt.Errorf("CEL environment creation error: %w", err)
 	}
 
-	// Compile tool policies
-	for _, policy := range deps.AppCtx.Config.Policies.Tools {
-		ast, issues := env.Compile(policy.Expression)
+	for _, rule := range deps.AppCtx.Config.Policies.Rules {
+		ast, issues := env.Compile(rule.Expression)
 		if issues != nil && issues.Err() != nil {
-			return nil, fmt.Errorf("CEL tool policy compilation error for %q: %w", policy.Expression, issues.Err())
+			return nil, fmt.Errorf("CEL policy compilation error for %q: %w", rule.Expression, issues.Err())
 		}
 		prg, err := env.Program(ast)
 		if err != nil {
-			return nil, fmt.Errorf("CEL tool program construction error: %w", err)
+			return nil, fmt.Errorf("CEL policy program construction error: %w", err)
 		}
-		mw.compiledToolPolicies = append(mw.compiledToolPolicies, CompiledToolPolicy{
-			Program:      prg,
-			AllowedTools: policy.AllowedTools,
-		})
-	}
-
-	// Compile namespace policies
-	for _, policy := range deps.AppCtx.Config.Policies.Namespaces {
-		ast, issues := env.Compile(policy.Expression)
-		if issues != nil && issues.Err() != nil {
-			return nil, fmt.Errorf("CEL namespace policy compilation error for %q: %w", policy.Expression, issues.Err())
-		}
-		prg, err := env.Program(ast)
-		if err != nil {
-			return nil, fmt.Errorf("CEL namespace program construction error: %w", err)
-		}
-		mw.compiledNsPolicies = append(mw.compiledNsPolicies, CompiledNamespacePolicy{
+		mw.compiledPolicies = append(mw.compiledPolicies, CompiledPolicy{
 			Program:           prg,
-			AllowedNamespaces: policy.AllowedNamespaces,
+			AllowedTools:      rule.AllowedTools,
+			AllowedNamespaces: rule.AllowedNamespaces,
 		})
 	}
 
 	return mw, nil
 }
 
-// Middleware wraps a tool handler and enforces both tool and namespace policies
-// before delegating to the next handler.
+// Middleware wraps a tool handler and enforces policy rules before delegating
+// to the next handler. The first matching rule's allowed_tools and
+// allowed_namespaces are both checked with AND semantics.
 func (mw *ToolPolicyMiddleware) Middleware(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// When no policies are configured, allow everything.
-		if len(mw.compiledToolPolicies) == 0 && len(mw.compiledNsPolicies) == 0 {
+		// When no rules are configured, allow everything.
+		if len(mw.compiledPolicies) == 0 {
 			return next(ctx, request)
 		}
 
@@ -120,58 +107,38 @@ func (mw *ToolPolicyMiddleware) Middleware(next server.ToolHandlerFunc) server.T
 		}
 
 		toolName := request.Params.Name
+		namespace := mw.extractNamespace(request)
 
-		// --- Tool policy check ---
-		if len(mw.compiledToolPolicies) > 0 {
-			allowed := false
-			for _, policy := range mw.compiledToolPolicies {
-				out, _, err := policy.Program.Eval(map[string]interface{}{"payload": payload})
-				if err != nil {
-					mw.dependencies.AppCtx.Logger.Error("CEL tool policy evaluation error", "error", err.Error())
-					continue
-				}
-				if out.Value() == true {
-					if mw.isToolAllowed(toolName, policy.AllowedTools) {
-						allowed = true
-						break
-					}
-				}
+		for _, policy := range mw.compiledPolicies {
+			out, _, err := policy.Program.Eval(map[string]interface{}{"payload": payload})
+			if err != nil {
+				mw.dependencies.AppCtx.Logger.Error("CEL policy evaluation error", "error", err.Error())
+				continue
 			}
-			if !allowed {
+			if out.Value() != true {
+				continue
+			}
+
+			// Expression matched — check both dimensions with AND.
+			toolOK := len(policy.AllowedTools) == 0 || mw.isToolAllowed(toolName, policy.AllowedTools)
+			nsOK := namespace == "" || len(policy.AllowedNamespaces) == 0 || mw.isNamespaceAllowed(namespace, policy.AllowedNamespaces)
+
+			if !toolOK {
 				mw.dependencies.AppCtx.Logger.Warn("tool access denied by policy", "tool", toolName)
 				return mcp.NewToolResultError(fmt.Sprintf("access denied: no permission to use %q", toolName)), nil
 			}
-		}
-
-		// --- Namespace policy check ---
-		if len(mw.compiledNsPolicies) > 0 {
-			namespace := mw.extractNamespace(request)
-			if namespace != "" {
-				nsAllowed := false
-				for _, policy := range mw.compiledNsPolicies {
-					out, _, err := policy.Program.Eval(map[string]interface{}{"payload": payload})
-					if err != nil {
-						mw.dependencies.AppCtx.Logger.Error("CEL namespace policy evaluation error", "error", err.Error())
-						continue
-					}
-					if out.Value() == true {
-						if mw.isNamespaceAllowed(namespace, policy.AllowedNamespaces) {
-							nsAllowed = true
-							break
-						}
-					}
-				}
-				if !nsAllowed {
-					mw.dependencies.AppCtx.Logger.Warn("namespace access denied by policy",
-						"tool", toolName,
-						"namespace", namespace,
-					)
-					return mcp.NewToolResultError(fmt.Sprintf("access denied: no permission to access namespace %q", namespace)), nil
-				}
+			if !nsOK {
+				mw.dependencies.AppCtx.Logger.Warn("namespace access denied by policy", "tool", toolName, "namespace", namespace)
+				return mcp.NewToolResultError(fmt.Sprintf("access denied: no permission to access namespace %q", namespace)), nil
 			}
+
+			// Both dimensions passed — allow the request.
+			return next(ctx, request)
 		}
 
-		return next(ctx, request)
+		// No rule matched at all.
+		mw.dependencies.AppCtx.Logger.Warn("access denied: no matching policy", "tool", toolName)
+		return mcp.NewToolResultError("access denied: no matching policy"), nil
 	}
 }
 

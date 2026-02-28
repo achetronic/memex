@@ -129,24 +129,25 @@ type OAuthProtectedResourceConfig struct {
 	DPoPBoundAccessTokensRequired         bool     `yaml:"dpop_bound_access_tokens_required,omitempty"`
 }
 
-// ToolPolicyConfig pairs a CEL expression with the set of tools it unlocks.
-// The first policy whose expression evaluates to true wins.
-type ToolPolicyConfig struct {
-	Expression   string   `yaml:"expression"`
-	AllowedTools []string `yaml:"allowed_tools"`
+// PolicyConfig pairs a CEL expression with the set of tools and namespaces it
+// grants access to when the expression evaluates to true.
+//
+// The first policy whose expression matches wins. Within a matching policy:
+//   - An empty allowed_tools list means no restriction on tools.
+//   - An empty allowed_namespaces list means no restriction on namespaces.
+//   - Use "*" to explicitly allow all tools or all namespaces.
+//
+// Both dimensions are checked with AND: the tool must be allowed AND the
+// namespace must be allowed for the request to proceed.
+type PolicyConfig struct {
+	Expression        string   `yaml:"expression"`
+	AllowedTools      []string `yaml:"allowed_tools,omitempty"`
+	AllowedNamespaces []string `yaml:"allowed_namespaces,omitempty"`
 }
 
-// NamespacePolicyConfig pairs a CEL expression with the namespaces it grants
-// access to. Use "*" in allowed_namespaces to grant access to all namespaces.
-type NamespacePolicyConfig struct {
-	Expression         string   `yaml:"expression"`
-	AllowedNamespaces  []string `yaml:"allowed_namespaces"`
-}
-
-// PoliciesConfig groups tool and namespace access-control policies.
+// PoliciesConfig holds the list of access-control policies evaluated in order.
 type PoliciesConfig struct {
-	Tools      []ToolPolicyConfig      `yaml:"tools"`
-	Namespaces []NamespacePolicyConfig `yaml:"namespaces"`
+	Rules []PolicyConfig `yaml:"rules"`
 }
 
 // Configuration is the root configuration structure for memex-mcp.

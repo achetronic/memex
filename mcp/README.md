@@ -19,8 +19,7 @@ the Model Context Protocol.
    - [memex.auth — API key resolution](#memexauth--api-key-resolution)
    - [middleware.access_logs](#middlewareaccess_logs)
    - [middleware.jwt](#middlewarejwt)
-   - [policies.tools](#policiesstools)
-   - [policies.namespaces](#policiesnamespaces)
+   - [policies.rules](#policiesrules)
    - [oauth_authorization_server](#oauth_authorization_server)
    - [oauth_protected_resource](#oauth_protected_resource)
 5. [Running memex-mcp](#running-memex-mcp)
@@ -173,34 +172,35 @@ middleware:
 `allow_conditions` are [CEL](https://cel.dev) expressions evaluated against the
 decoded JWT payload. A request is allowed if **any** condition evaluates to true.
 
-### policies.tools
+### policies.rules
 
-Controls which tools each JWT identity can call. The first matching policy wins.
-Supports exact names and prefix wildcards (`"search_*"`).
+Rules unify tool and namespace access control into a single list. Rules are
+evaluated in order — the first whose CEL expression matches wins. Within the
+matching rule, `allowed_tools` and `allowed_namespaces` are both enforced with
+AND semantics: the tool must be allowed **and** the namespace must be allowed.
+
+An empty `allowed_tools` or `allowed_namespaces` means no restriction on that
+dimension. Use `"*"` to explicitly allow everything.
+
+`allowed_tools` supports exact names and prefix wildcards (`"search_*"`).
 
 ```yaml
 policies:
-  tools:
+  rules:
+    # Admins can use all tools across all namespaces.
     - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
       allowed_tools: ["*"]
-    - expression: 'has(payload.scope) && payload.scope.contains("memex:write")'
-      allowed_tools: ["upload_document", "delete_document", "list_documents", "get_document", "search", "health"]
-    - expression: 'has(payload.scope) && payload.scope.contains("memex:read")'
-      allowed_tools: ["list_documents", "get_document", "search", "health"]
-```
-
-### policies.namespaces
-
-Controls which namespaces each JWT identity can access. Evaluated after the tool
-policy. Use `"*"` to grant access to all namespaces.
-
-```yaml
-policies:
-  namespaces:
-    - expression: 'has(payload.groups) && payload.groups.exists(g, g == "admins")'
       allowed_namespaces: ["*"]
-    - expression: 'has(payload.sub)'
-      allowed_namespaces: ["invoices", "contracts"]
+
+    # Write agents: restricted tools, own namespace only.
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:write") && has(payload.sub)'
+      allowed_tools: ["upload_document", "delete_document", "list_documents", "get_document", "search", "health"]
+      allowed_namespaces: ["${payload.sub}"]
+
+    # Read agents: read-only tools, own namespace only.
+    - expression: 'has(payload.scope) && payload.scope.contains("memex:read") && has(payload.sub)'
+      allowed_tools: ["list_documents", "get_document", "search", "health"]
+      allowed_namespaces: ["${payload.sub}"]
 ```
 
 ### oauth_authorization_server
@@ -334,5 +334,9 @@ they claim to be. Without JWT validation, any client can send an arbitrary
 JWT validation and policy enforcement only apply to the **HTTP transport**.
 In stdio mode all calls are trusted — access control is delegated to the
 operating system (only processes that can launch memex-mcp can use it).
+
+Policies in `policies.rules` are evaluated only after the JWT middleware has
+validated the token. The JWT check is a prerequisite — it runs first and
+provides the `payload` variable that CEL expressions reference.
 
 For a full HTTP + JWT + policies example see [`docs/config-http.yaml`](docs/config-http.yaml).

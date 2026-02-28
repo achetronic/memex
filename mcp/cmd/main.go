@@ -62,7 +62,7 @@ func main() {
 	}
 
 	var toolMiddlewares []middlewares.ToolMiddleware
-	if toolPolicyMw != nil && (len(appCtx.Config.Policies.Tools) > 0 || len(appCtx.Config.Policies.Namespaces) > 0) {
+	if toolPolicyMw != nil && len(appCtx.Config.Policies.Rules) > 0 {
 		toolMiddlewares = append(toolMiddlewares, toolPolicyMw)
 	}
 

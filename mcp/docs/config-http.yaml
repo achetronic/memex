@@ -13,10 +13,10 @@ memex:
   base_url: "${MEMEX_BASE_URL}"
   default_namespace: ""   # override per-request via the namespace tool parameter
   auth:
-    # forward_header: agents send this header to memex-mcp and it is forwarded
-    # verbatim to the Memex API as X-Memex-Api-Key. Only useful if agents manage
-    # their own keys. Requires JWT auth above to prevent unauthorized forwarding.
-    forward_header: "X-Memex-Api-Key"
+    # forward_api_key: if true, memex-mcp forwards the X-Memex-Api-Key header
+    # from the agent's request verbatim to the Memex API. Requires JWT auth
+    # to be enabled — without it any caller could inject an arbitrary key.
+    forward_api_key: true
 
     # namespace_keys: static API keys per namespace, used when no forwarded key
     # is present. Use "*" as a catch-all fallback.

@@ -38,15 +38,16 @@ type ServerConfig struct {
 // MemexAuthConfig controls how memex-mcp authenticates against the Memex API.
 //
 // Resolution order for each request (first non-empty value wins):
-//  1. Header forwarded from the agent request (ForwardHeader)
+//  1. X-Memex-Api-Key header forwarded from the agent request (ForwardApiKey)
 //  2. Static API key configured for the specific namespace (NamespaceKeys)
 //  3. Static API key configured for the "*" wildcard namespace (NamespaceKeys)
 //  4. No credential — compatible with Memex instances that have no auth yet.
 type MemexAuthConfig struct {
-	// ForwardHeader is the name of the HTTP header the agent sends to memex-mcp
-	// that should be forwarded verbatim to the Memex API as its auth header.
-	// Example: "X-Memex-Api-Key"
-	ForwardHeader string `yaml:"forward_header,omitempty"`
+	// ForwardApiKey enables forwarding of the X-Memex-Api-Key header from the
+	// agent's incoming request verbatim to the Memex API. Only meaningful in
+	// HTTP transport mode — requires JWT auth to be enabled, otherwise any
+	// caller could inject an arbitrary key.
+	ForwardApiKey bool `yaml:"forward_api_key,omitempty"`
 
 	// NamespaceKeys maps namespace names to their static API keys.
 	// Use "*" as the key for a catch-all fallback.

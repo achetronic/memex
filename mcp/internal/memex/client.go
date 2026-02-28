@@ -61,7 +61,7 @@ func NewClient(baseURL, defaultNamespace string, auth api.MemexAuthConfig) *Clie
 // ResolveApiKey determines the API key to send to Memex for a given namespace
 // and forwarded header value, following this precedence:
 //
-//  1. forwardedKey — the value the agent passed in the configured forward header
+//  1. forwardedKey — the value the agent passed via X-Memex-Api-Key (when ForwardApiKey is true)
 //  2. Exact namespace match in NamespaceKeys config
 //  3. Wildcard "*" entry in NamespaceKeys config
 //  4. Empty string — no credential sent (no-auth Memex instances)
@@ -78,10 +78,11 @@ func (c *Client) ResolveApiKey(namespace, forwardedKey string) string {
 	return c.auth.NamespaceKeys["*"]
 }
 
-// ForwardHeader returns the configured header name that agents use to pass an
-// API key through to the Memex API. Returns an empty string if not configured.
-func (c *Client) ForwardHeader() string {
-	return c.auth.ForwardHeader
+// ForwardApiKey reports whether key forwarding is enabled. When true, the
+// X-Memex-Api-Key header from the agent's incoming request is forwarded
+// verbatim to the Memex API.
+func (c *Client) ForwardApiKey() bool {
+	return c.auth.ForwardApiKey
 }
 
 // do executes an HTTP request against the Memex API, setting the namespace and

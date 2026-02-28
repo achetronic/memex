@@ -95,17 +95,16 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 // the HTTP middleware) and delegates to the client's resolution logic.
 //
 // Resolution order:
-//  1. Value of the configured forward_header in the agent's HTTP request
+//  1. X-Memex-Api-Key from the agent's HTTP request (when forward_api_key: true)
 //  2. Static key for the namespace in config (namespace_keys)
 //  3. Static key for "*" wildcard in config (namespace_keys)
 //  4. Empty string — no credential sent
 func (tm *ToolsManager) resolveApiKey(ctx context.Context, namespace string) string {
 	var forwarded string
 
-	fwdHeader := tm.dependencies.MemexClient.ForwardHeader()
-	if fwdHeader != "" {
+	if tm.dependencies.MemexClient.ForwardApiKey() {
 		if headers := middlewares.ForwardedHeadersFromContext(ctx); headers != nil {
-			forwarded = headers.Get(fwdHeader)
+			forwarded = headers.Get("X-Memex-Api-Key")
 		}
 	}
 

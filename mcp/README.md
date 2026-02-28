@@ -123,8 +123,10 @@ memex:
 When the Memex API requires authentication, memex-mcp resolves the API key for
 each request using this precedence (first non-empty value wins):
 
-1. **Forwarded header** — the agent sends the configured header to memex-mcp and
-   it is forwarded verbatim to Memex. Requires JWT auth to prevent abuse.
+1. **Forwarded header** — when `forward_api_key: true`, the agent sends
+   `X-Memex-Api-Key` to memex-mcp and it is forwarded verbatim to Memex.
+   **JWT auth must be enabled** when using this option — without it any
+   unauthenticated caller could inject an arbitrary key.
 2. **Static key for the namespace** — looked up in `namespace_keys`.
 3. **Static key for `"*"`** — catch-all fallback in `namespace_keys`.
 4. **No credential** — compatible with Memex instances that have no auth yet.
@@ -133,7 +135,7 @@ each request using this precedence (first non-empty value wins):
 memex:
   base_url: "http://localhost:8080"
   auth:
-    forward_header: "X-Memex-Api-Key"   # header name agents use to pass their key
+    forward_api_key: true              # agents send X-Memex-Api-Key; JWT auth required
     namespace_keys:
       invoices:  "${MEMEX_KEY_INVOICES}"
       contracts: "${MEMEX_KEY_CONTRACTS}"
@@ -313,15 +315,17 @@ memex:
 
 memex-mcp resolves the Memex API key for each request in this order:
 
-1. The value of `memex.auth.forward_header` from the agent's incoming HTTP
-   request — useful when each agent manages its own key.
+1. The `X-Memex-Api-Key` header from the agent's incoming HTTP request, when
+   `memex.auth.forward_api_key: true`.
 2. The static key configured in `memex.auth.namespace_keys` for the specific
    namespace.
 3. The static key configured for `"*"` in `memex.auth.namespace_keys`.
 4. No credential (no-auth Memex instances).
 
-The forwarded-header approach requires HTTP transport with JWT auth enabled,
-otherwise any caller could inject an arbitrary key.
+**`forward_api_key: true` requires JWT auth to be enabled.** This option lets
+each agent supply its own key, but it depends entirely on the caller being who
+they claim to be. Without JWT validation, any client can send an arbitrary
+`X-Memex-Api-Key` and impersonate another agent. Enable `middleware.jwt` first.
 
 ---
 

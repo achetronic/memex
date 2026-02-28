@@ -1,0 +1,29 @@
+# memex server config — namespaces and API key auth
+#
+# Pass this file with: memex -config config.yaml
+#
+# All string values support ${ENV_VAR} expansion.
+# If this file is not provided (or api_keys is empty), auth is disabled
+# and all requests are allowed through without any key or namespace header.
+
+namespaces:
+  - name: facturas
+  - name: contratos
+  - name: general
+
+auth:
+  api_keys:
+    # Admin key — access to all namespaces.
+    - key: "${MEMEX_KEY_ADMIN}"
+      namespaces: ["*"]
+
+    # Service key — read/write only facturas and contratos.
+    - key: "${MEMEX_KEY_SERVICE}"
+      namespaces:
+        - facturas
+        - contratos
+
+    # Restricted key — only the general namespace.
+    - key: "${MEMEX_KEY_GENERAL}"
+      namespaces:
+        - general

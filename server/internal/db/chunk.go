@@ -26,6 +26,7 @@ import (
 type Chunk struct {
 	ID         uuid.UUID      `json:"id"`
 	DocumentID uuid.UUID      `json:"document_id"`
+	Namespace  string         `json:"namespace"`
 	ChunkIndex int            `json:"chunk_index"`
 	Content    string         `json:"content"`
 	Metadata   map[string]any `json:"metadata"`
@@ -36,6 +37,7 @@ type Chunk struct {
 type SearchResult struct {
 	ChunkID    uuid.UUID      `json:"chunk_id"`
 	DocumentID uuid.UUID      `json:"document_id"`
+	Namespace  string         `json:"namespace"`
 	Filename   string         `json:"filename"`
 	ChunkIndex int            `json:"chunk_index"`
 	Content    string         `json:"content"`
@@ -44,9 +46,9 @@ type SearchResult struct {
 }
 
 // InsertChunks inserts a batch of chunks with their embeddings into the database.
-// All chunks belong to the same document. The operation is performed in a single
-// transaction for atomicity.
-func (s *Store) InsertChunks(ctx context.Context, documentID uuid.UUID, chunks []Chunk, embeddings [][]float32) error {
+// All chunks belong to the same document and namespace. The operation is
+// performed in a single transaction for atomicity.
+func (s *Store) InsertChunks(ctx context.Context, documentID uuid.UUID, namespace string, chunks []Chunk, embeddings [][]float32) error {
 	if len(chunks) != len(embeddings) {
 		return fmt.Errorf("chunks (%d) and embeddings (%d) length mismatch", len(chunks), len(embeddings))
 	}
@@ -60,9 +62,9 @@ func (s *Store) InsertChunks(ctx context.Context, documentID uuid.UUID, chunks [
 	for i, chunk := range chunks {
 		vec := pgvector.NewVector(embeddings[i])
 		_, err := tx.Exec(ctx, `
-			INSERT INTO chunks (document_id, chunk_index, content, embedding, metadata)
-			VALUES ($1, $2, $3, $4, $5)
-		`, documentID, chunk.ChunkIndex, chunk.Content, vec, chunk.Metadata)
+			INSERT INTO chunks (document_id, namespace, chunk_index, content, embedding, metadata)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`, documentID, namespace, chunk.ChunkIndex, chunk.Content, vec, chunk.Metadata)
 		if err != nil {
 			return fmt.Errorf("inserting chunk %d: %w", i, err)
 		}
@@ -74,42 +76,79 @@ func (s *Store) InsertChunks(ctx context.Context, documentID uuid.UUID, chunks [
 	return nil
 }
 
-// Search performs cosine similarity search over chunk embeddings.
-// It returns the top `limit` most similar chunks to the given query vector,
-// joined with document filename for context.
-func (s *Store) Search(ctx context.Context, queryEmbedding []float32, limit int) ([]*SearchResult, error) {
+// Search performs cosine similarity search over chunk embeddings, scoped to the
+// given namespace. Pass an empty string to search across all namespaces.
+// Returns the top `limit` most similar chunks joined with document filename.
+func (s *Store) Search(ctx context.Context, queryEmbedding []float32, namespace string, limit int) ([]*SearchResult, error) {
 	vec := pgvector.NewVector(queryEmbedding)
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT
-			c.id,
-			c.document_id,
-			d.filename,
-			c.chunk_index,
-			c.content,
-			1 - (c.embedding <=> $1) AS score,
-			c.metadata
-		FROM chunks c
-		JOIN documents d ON d.id = c.document_id
-		WHERE c.embedding IS NOT NULL
-		ORDER BY c.embedding <=> $1
-		LIMIT $2
-	`, vec, limit)
+	var (
+		rows interface{ Close() }
+		err  error
+	)
+
+	if namespace != "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT
+				c.id,
+				c.document_id,
+				c.namespace,
+				d.filename,
+				c.chunk_index,
+				c.content,
+				1 - (c.embedding <=> $1) AS score,
+				c.metadata
+			FROM chunks c
+			JOIN documents d ON d.id = c.document_id
+			WHERE c.embedding IS NOT NULL AND c.namespace = $2
+			ORDER BY c.embedding <=> $1
+			LIMIT $3
+		`, vec, namespace, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT
+				c.id,
+				c.document_id,
+				c.namespace,
+				d.filename,
+				c.chunk_index,
+				c.content,
+				1 - (c.embedding <=> $1) AS score,
+				c.metadata
+			FROM chunks c
+			JOIN documents d ON d.id = c.document_id
+			WHERE c.embedding IS NOT NULL
+			ORDER BY c.embedding <=> $1
+			LIMIT $2
+		`, vec, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("executing search query: %w", err)
 	}
-	defer rows.Close()
+
+	// rows is *pgxpool.Rows — use type assertion to call Next/Scan/Close/Err.
+	type scanner interface {
+		Next() bool
+		Scan(dest ...any) error
+		Close()
+		Err() error
+	}
+	sr := rows.(scanner)
+	defer sr.Close()
 
 	var results []*SearchResult
-	for rows.Next() {
+	for sr.Next() {
 		r := &SearchResult{}
-		if err := rows.Scan(
-			&r.ChunkID, &r.DocumentID, &r.Filename,
+		if err := sr.Scan(
+			&r.ChunkID, &r.DocumentID, &r.Namespace, &r.Filename,
 			&r.ChunkIndex, &r.Content, &r.Score, &r.Metadata,
 		); err != nil {
 			return nil, fmt.Errorf("scanning search result: %w", err)
 		}
 		results = append(results, r)
+	}
+	if err := sr.Err(); err != nil {
+		return nil, fmt.Errorf("iterating search results: %w", err)
 	}
 	return results, nil
 }

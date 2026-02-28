@@ -22,6 +22,7 @@ import (
 
 	"github.com/achetronic/memex/internal/api/handler"
 	mw "github.com/achetronic/memex/internal/api/middleware"
+	"github.com/achetronic/memex/internal/config"
 	"github.com/achetronic/memex/internal/db"
 	"github.com/achetronic/memex/internal/embedder"
 	"github.com/achetronic/memex/internal/ingestion"
@@ -35,13 +36,14 @@ import (
 
 // RouterConfig carries all dependencies needed to build the HTTP router.
 type RouterConfig struct {
-	Store          *db.Store
-	Embedder       *embedder.Embedder
-	Worker         *ingestion.Worker
-	Log            *slog.Logger
-	MaxUploadMB    int64
-	DefaultLimit   int
-	FrontendFS     fs.FS
+	Store        *db.Store
+	Embedder     *embedder.Embedder
+	Worker       *ingestion.Worker
+	Log          *slog.Logger
+	Config       *config.Config
+	MaxUploadMB  int64
+	DefaultLimit int
+	FrontendFS   fs.FS
 }
 
 // NewRouter creates and returns the fully configured chi router.
@@ -59,8 +61,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	// Swagger UI.
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
-	// API v1.
+	// API v1 — auth middleware runs first for every route in this group.
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(mw.Auth(cfg.Config, cfg.Log))
+
 		docs := handler.NewDocuments(cfg.Store, cfg.Worker, cfg.Log, cfg.MaxUploadMB)
 		r.Post("/documents", docs.Upload)
 		r.Get("/documents", docs.List)

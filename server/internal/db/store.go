@@ -65,6 +65,7 @@ func (s *Store) migrate(ctx context.Context) error {
 
 		`CREATE TABLE IF NOT EXISTS documents (
 			id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			namespace    TEXT        NOT NULL DEFAULT '',
 			filename     TEXT        NOT NULL,
 			format       TEXT        NOT NULL,
 			status       TEXT        NOT NULL DEFAULT 'pending',
@@ -74,9 +75,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 
+		// Idempotent migration: add namespace column to pre-existing tables.
+		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
+
 		`CREATE TABLE IF NOT EXISTS chunks (
 			id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			document_id   UUID        NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+			namespace     TEXT        NOT NULL DEFAULT '',
 			chunk_index   INTEGER     NOT NULL,
 			content       TEXT        NOT NULL,
 			embedding     vector,
@@ -84,10 +89,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 
+		`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
+
 		// Partial index: only index chunks that have an embedding.
 		`CREATE INDEX IF NOT EXISTS chunks_embedding_idx
 			ON chunks USING ivfflat (embedding vector_cosine_ops)
 			WHERE embedding IS NOT NULL`,
+
+		// Index for fast namespace-filtered queries on documents.
+		`CREATE INDEX IF NOT EXISTS documents_namespace_idx ON documents (namespace)`,
+
+		// Index for fast namespace-filtered chunk searches.
+		`CREATE INDEX IF NOT EXISTS chunks_namespace_idx ON chunks (namespace)`,
 	}
 
 	for _, stmt := range statements {

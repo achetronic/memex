@@ -26,6 +26,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -57,8 +58,12 @@ func main() {
 // run is the real entry point. It initialises all dependencies, starts the
 // HTTP server with graceful shutdown, and blocks until a signal is received.
 func run() error {
-	// 1. Load configuration from environment.
-	cfg, err := config.Load()
+	// 1. Parse flags.
+	configPath := flag.String("config", "", "path to optional YAML config file (namespaces, auth)")
+	flag.Parse()
+
+	// 2. Load configuration from environment (and optional YAML file).
+	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -106,6 +111,7 @@ func run() error {
 		Embedder:     emb,
 		Worker:       worker,
 		Log:          log,
+		Config:       cfg,
 		MaxUploadMB:  cfg.MaxUploadSizeMB,
 		DefaultLimit: cfg.SearchDefaultLimit,
 		FrontendFS:   frontend,

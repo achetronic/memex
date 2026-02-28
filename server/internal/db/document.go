@@ -35,6 +35,7 @@ const (
 // Document represents a row in the documents table.
 type Document struct {
 	ID         uuid.UUID      `json:"id"`
+	Namespace  string         `json:"namespace"`
 	Filename   string         `json:"filename"`
 	Format     string         `json:"format"`
 	Status     DocumentStatus `json:"status"`
@@ -46,14 +47,14 @@ type Document struct {
 
 // CreateDocument inserts a new document row with status "pending" and returns
 // the generated UUID.
-func (s *Store) CreateDocument(ctx context.Context, filename, format string) (*Document, error) {
+func (s *Store) CreateDocument(ctx context.Context, namespace, filename, format string) (*Document, error) {
 	doc := &Document{}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO documents (filename, format)
-		VALUES ($1, $2)
-		RETURNING id, filename, format, status, error, chunk_count, created_at, updated_at
-	`, filename, format).Scan(
-		&doc.ID, &doc.Filename, &doc.Format, &doc.Status,
+		INSERT INTO documents (namespace, filename, format)
+		VALUES ($1, $2, $3)
+		RETURNING id, namespace, filename, format, status, error, chunk_count, created_at, updated_at
+	`, namespace, filename, format).Scan(
+		&doc.ID, &doc.Namespace, &doc.Filename, &doc.Format, &doc.Status,
 		&doc.Error, &doc.ChunkCount, &doc.CreatedAt, &doc.UpdatedAt,
 	)
 	if err != nil {
@@ -62,14 +63,15 @@ func (s *Store) CreateDocument(ctx context.Context, filename, format string) (*D
 	return doc, nil
 }
 
-// GetDocument retrieves a single document by its UUID. Returns an error if not found.
-func (s *Store) GetDocument(ctx context.Context, id uuid.UUID) (*Document, error) {
+// GetDocument retrieves a single document by its UUID, scoped to the given namespace.
+// Returns an error if the document is not found or belongs to a different namespace.
+func (s *Store) GetDocument(ctx context.Context, namespace string, id uuid.UUID) (*Document, error) {
 	doc := &Document{}
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, filename, format, status, error, chunk_count, created_at, updated_at
-		FROM documents WHERE id = $1
-	`, id).Scan(
-		&doc.ID, &doc.Filename, &doc.Format, &doc.Status,
+		SELECT id, namespace, filename, format, status, error, chunk_count, created_at, updated_at
+		FROM documents WHERE id = $1 AND namespace = $2
+	`, id, namespace).Scan(
+		&doc.ID, &doc.Namespace, &doc.Filename, &doc.Format, &doc.Status,
 		&doc.Error, &doc.ChunkCount, &doc.CreatedAt, &doc.UpdatedAt,
 	)
 	if err != nil {
@@ -78,17 +80,18 @@ func (s *Store) GetDocument(ctx context.Context, id uuid.UUID) (*Document, error
 	return doc, nil
 }
 
-// ListDocuments returns all documents, optionally filtered by status.
-// Pass an empty string to return all statuses.
-func (s *Store) ListDocuments(ctx context.Context, status DocumentStatus) ([]*Document, error) {
+// ListDocuments returns all documents in the given namespace, optionally filtered
+// by status. Pass an empty string for status to return all statuses.
+func (s *Store) ListDocuments(ctx context.Context, namespace string, status DocumentStatus) ([]*Document, error) {
 	query := `
-		SELECT id, filename, format, status, error, chunk_count, created_at, updated_at
+		SELECT id, namespace, filename, format, status, error, chunk_count, created_at, updated_at
 		FROM documents
+		WHERE namespace = $1
 	`
-	args := []any{}
+	args := []any{namespace}
 
 	if status != "" {
-		query += " WHERE status = $1"
+		query += " AND status = $2"
 		args = append(args, status)
 	}
 	query += " ORDER BY created_at DESC"
@@ -103,7 +106,7 @@ func (s *Store) ListDocuments(ctx context.Context, status DocumentStatus) ([]*Do
 	for rows.Next() {
 		doc := &Document{}
 		if err := rows.Scan(
-			&doc.ID, &doc.Filename, &doc.Format, &doc.Status,
+			&doc.ID, &doc.Namespace, &doc.Filename, &doc.Format, &doc.Status,
 			&doc.Error, &doc.ChunkCount, &doc.CreatedAt, &doc.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scanning document row: %w", err)
@@ -140,9 +143,11 @@ func (s *Store) UpdateDocumentChunkCount(ctx context.Context, id uuid.UUID, coun
 	return nil
 }
 
-// DeleteDocument removes a document and all its chunks (via ON DELETE CASCADE).
-func (s *Store) DeleteDocument(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM documents WHERE id = $1`, id)
+// DeleteDocument removes a document and all its chunks (via ON DELETE CASCADE),
+// scoped to the given namespace. Returns an error if the document is not found
+// or belongs to a different namespace.
+func (s *Store) DeleteDocument(ctx context.Context, namespace string, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM documents WHERE id = $1 AND namespace = $2`, id, namespace)
 	if err != nil {
 		return fmt.Errorf("deleting document %s: %w", id, err)
 	}

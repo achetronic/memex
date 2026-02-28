@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	mw "github.com/achetronic/memex/internal/api/middleware"
 	"github.com/achetronic/memex/internal/db"
 	"github.com/achetronic/memex/internal/ingestion"
 	"github.com/achetronic/memex/internal/parser"
@@ -53,15 +54,18 @@ func NewDocuments(store *db.Store, worker *ingestion.Worker, log *slog.Logger, m
 //	@Tags			documents
 //	@Accept			multipart/form-data
 //	@Produce		json
-//	@Param			file	formData	file	true	"Document file to ingest"
-//	@Success		202		{object}	db.Document
-//	@Failure		400		{object}	errorResponse
-//	@Failure		413		{object}	errorResponse
-//	@Failure		422		{object}	errorResponse
-//	@Failure		429		{object}	errorResponse
-//	@Failure		500		{object}	errorResponse
+//	@Param			X-Memex-Namespace	header		string	false	"Target namespace"
+//	@Param			file				formData	file	true	"Document file to ingest"
+//	@Success		202					{object}	db.Document
+//	@Failure		400					{object}	errorResponse
+//	@Failure		413					{object}	errorResponse
+//	@Failure		422					{object}	errorResponse
+//	@Failure		429					{object}	errorResponse
+//	@Failure		500					{object}	errorResponse
 //	@Router			/documents [post]
 func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
+	namespace := mw.NamespaceFromContext(r.Context())
+
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadBytes)
 
 	if err := r.ParseMultipartForm(h.maxUploadBytes); err != nil {
@@ -86,7 +90,7 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 
 	format := strings.TrimPrefix(ext, ".")
 
-	doc, err := h.store.CreateDocument(r.Context(), filename, format)
+	doc, err := h.store.CreateDocument(r.Context(), namespace, filename, format)
 	if err != nil {
 		h.log.Error("failed to create document record", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not create document")
@@ -95,13 +99,14 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 
 	job := ingestion.Job{
 		DocumentID: doc.ID,
+		Namespace:  namespace,
 		Filename:   filename,
 		Content:    file,
 	}
 
 	if !h.worker.Enqueue(job) {
 		// Queue full — clean up the created record to avoid orphans.
-		_ = h.store.DeleteDocument(r.Context(), doc.ID)
+		_ = h.store.DeleteDocument(r.Context(), namespace, doc.ID)
 		writeError(w, http.StatusTooManyRequests, "ingestion queue is full, try again later")
 		return
 	}
@@ -112,16 +117,19 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 // List godoc
 //
 //	@Summary		List documents
-//	@Description	Returns all documents, optionally filtered by status (pending, processing, completed, failed).
+//	@Description	Returns all documents in the active namespace, optionally filtered by status.
 //	@Tags			documents
 //	@Produce		json
-//	@Param			status	query		string	false	"Filter by status"	Enums(pending, processing, completed, failed)
-//	@Success		200		{array}		db.Document
-//	@Failure		500		{object}	errorResponse
+//	@Param			X-Memex-Namespace	header	string	false	"Target namespace"
+//	@Param			status				query	string	false	"Filter by status"	Enums(pending, processing, completed, failed)
+//	@Success		200					{array}		db.Document
+//	@Failure		500					{object}	errorResponse
 //	@Router			/documents [get]
 func (h *Documents) List(w http.ResponseWriter, r *http.Request) {
+	namespace := mw.NamespaceFromContext(r.Context())
 	status := db.DocumentStatus(r.URL.Query().Get("status"))
-	docs, err := h.store.ListDocuments(r.Context(), status)
+
+	docs, err := h.store.ListDocuments(r.Context(), namespace, status)
 	if err != nil {
 		h.log.Error("failed to list documents", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not list documents")
@@ -133,23 +141,26 @@ func (h *Documents) List(w http.ResponseWriter, r *http.Request) {
 // Get godoc
 //
 //	@Summary		Get a document
-//	@Description	Returns the detail and current ingestion status of a single document.
+//	@Description	Returns the detail and current ingestion status of a single document in the active namespace.
 //	@Tags			documents
 //	@Produce		json
-//	@Param			id	path		string	true	"Document UUID"
+//	@Param			X-Memex-Namespace	header	string	false	"Target namespace"
+//	@Param			id					path	string	true	"Document UUID"
 //	@Success		200	{object}	db.Document
 //	@Failure		400	{object}	errorResponse
 //	@Failure		404	{object}	errorResponse
 //	@Failure		500	{object}	errorResponse
 //	@Router			/documents/{id} [get]
 func (h *Documents) Get(w http.ResponseWriter, r *http.Request) {
+	namespace := mw.NamespaceFromContext(r.Context())
+
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document ID")
 		return
 	}
 
-	doc, err := h.store.GetDocument(r.Context(), id)
+	doc, err := h.store.GetDocument(r.Context(), namespace, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
 		return
@@ -160,23 +171,26 @@ func (h *Documents) Get(w http.ResponseWriter, r *http.Request) {
 // Delete godoc
 //
 //	@Summary		Delete a document
-//	@Description	Removes a document and all its chunks from the database.
+//	@Description	Removes a document and all its chunks from the active namespace.
 //	@Tags			documents
 //	@Produce		json
-//	@Param			id	path		string	true	"Document UUID"
+//	@Param			X-Memex-Namespace	header	string	false	"Target namespace"
+//	@Param			id					path	string	true	"Document UUID"
 //	@Success		204	"No Content"
 //	@Failure		400	{object}	errorResponse
 //	@Failure		404	{object}	errorResponse
 //	@Failure		500	{object}	errorResponse
 //	@Router			/documents/{id} [delete]
 func (h *Documents) Delete(w http.ResponseWriter, r *http.Request) {
+	namespace := mw.NamespaceFromContext(r.Context())
+
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document ID")
 		return
 	}
 
-	if err := h.store.DeleteDocument(r.Context(), id); err != nil {
+	if err := h.store.DeleteDocument(r.Context(), namespace, id); err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
 		return
 	}

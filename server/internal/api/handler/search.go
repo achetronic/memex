@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	mw "github.com/achetronic/memex/internal/api/middleware"
 	"github.com/achetronic/memex/internal/db"
 	"github.com/achetronic/memex/internal/embedder"
 )
@@ -91,7 +92,7 @@ func (h *Search) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.store.Search(r.Context(), vec, limit)
+	results, err := h.store.Search(r.Context(), vec, mw.NamespaceFromContext(r.Context()), limit)
 	if err != nil {
 		h.log.Error("search query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "search failed")

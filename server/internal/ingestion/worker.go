@@ -40,6 +40,7 @@ const (
 // Job represents a document ingestion task enqueued by the API.
 type Job struct {
 	DocumentID uuid.UUID
+	Namespace  string
 	Filename   string
 	Content    io.Reader
 }
@@ -202,7 +203,7 @@ func (w *Worker) process(ctx context.Context, job Job) error {
 		}
 	}
 
-	if err := w.store.InsertChunks(ctx, job.DocumentID, dbChunks, vectors); err != nil {
+	if err := w.store.InsertChunks(ctx, job.DocumentID, job.Namespace, dbChunks, vectors); err != nil {
 		return fmt.Errorf("storing chunks: %w", err)
 	}
 

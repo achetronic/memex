@@ -18,13 +18,6 @@ on:
 permissions:
   contents: write
 
-# Resolve the version and ref to use throughout the workflow.
-# - On release published: version = tag name, ref = tag
-# - On manual dispatch:   version = input, ref = tag (or main if use_main=true)
-env:
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name }}
-  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.use_main == 'true' && 'main' || (github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name) }}
-
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -49,21 +42,35 @@ jobs:
             suffix: ".exe"
 
     steps:
+      # Resolve the version and ref to use throughout the workflow.
+      # - On release published: version = tag name, ref = tag
+      # - On manual dispatch:   version = input, ref = tag (or main if use_main=true)
+      - name: Resolve version and ref
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            if [ "${{ inputs.use_main }}" = "true" ]; then
+              REF="main"
+            else
+              REF="${{ inputs.version }}"
+            fi
+          else
+            VERSION="${{ github.event.release.tag_name }}"
+            REF="${{ github.event.release.tag_name }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.CHECKOUT_REF }}
+          ref: ${{ steps.resolve.outputs.ref }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm ci
-          npm run build
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -73,9 +80,16 @@ jobs:
       - name: Install swag
         run: go install github.com/swaggo/swag/cmd/swag@latest
 
-      - name: Generate Swagger docs
-        working-directory: server
-        run: swag init -g cmd/main.go -o docs/
+      - name: Install Node dependencies
+        run: cd frontend && npm ci
+
+      # swagger must run before go mod download — docs/api is a local package
+      # that doesn't exist until swag generates it; go would try to fetch it from GitHub otherwise
+      - name: Build frontend and generate swagger
+        run: make frontend-build embed-copy swagger
+
+      - name: Download Go modules
+        run: cd server && go mod download
 
       - name: Build binary
         working-directory: server
@@ -86,7 +100,7 @@ jobs:
         run: |
           BINARY="memex-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
           go build \
-            -ldflags="-s -w -X main.version=${{ env.RELEASE_VERSION }}" \
+            -ldflags="-s -w -X main.version=${{ steps.resolve.outputs.version }}" \
             -o "../dist/${BINARY}" \
             ./cmd/
 
@@ -101,10 +115,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # Minimal checkout just to satisfy softprops/action-gh-release
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -118,5 +131,5 @@ jobs:
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_VERSION }}
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name }}
           files: dist/*

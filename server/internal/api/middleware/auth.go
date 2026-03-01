@@ -29,12 +29,11 @@ import (
 //
 // When auth is enabled, the middleware validates in this order:
 //  1. X-Memex-Api-Key header present → 401 if missing.
-//  2. X-Memex-Namespace header present → 400 if missing (namespace is required
-//     when auth is active so we always know the access scope).
+//  2. X-Memex-Namespace header present → 400 if missing.
 //  3. Namespace is declared in config → 400 if unknown.
 //  4. Key has access to the namespace → 403 if denied.
 //
-// On success the validated namespace is stored in the request context.
+// On success the validated namespace and allowed namespaces are stored in context.
 func Auth(cfg *config.Config, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +41,8 @@ func Auth(cfg *config.Config, log *slog.Logger) func(http.Handler) http.Handler 
 
 			if !cfg.IsAuthEnabled() {
 				// Auth disabled: pass through, carrying whatever namespace was sent.
-				next.ServeHTTP(w, r.WithContext(WithNamespace(r.Context(), namespace)))
+				ctx := WithNamespace(r.Context(), namespace)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
@@ -71,7 +71,42 @@ func Auth(cfg *config.Config, log *slog.Logger) func(http.Handler) http.Handler 
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(WithNamespace(r.Context(), namespace)))
+			allowed := cfg.GetApiKeyNamespaces(apiKey)
+			ctx := WithNamespace(r.Context(), namespace)
+			ctx = WithAllowedNamespaces(ctx, allowed)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// AuthKeyOnly is a lightweight middleware for endpoints that need to verify
+// the API key but do NOT require a namespace header (e.g. GET /api/v1/info).
+// It stores the allowed namespaces in context so the handler can return them.
+// When auth is disabled it passes through unconditionally.
+func AuthKeyOnly(cfg *config.Config, log *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !cfg.IsAuthEnabled() {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			apiKey := r.Header.Get("X-Memex-Api-Key")
+			if apiKey == "" {
+				log.Warn("auth: missing API key", "path", r.URL.Path)
+				writeAuthError(w, http.StatusUnauthorized, "missing X-Memex-Api-Key header")
+				return
+			}
+
+			allowed := cfg.GetApiKeyNamespaces(apiKey)
+			if allowed == nil {
+				log.Warn("auth: unknown API key", "path", r.URL.Path)
+				writeAuthError(w, http.StatusUnauthorized, "invalid API key")
+				return
+			}
+
+			ctx := WithAllowedNamespaces(r.Context(), allowed)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

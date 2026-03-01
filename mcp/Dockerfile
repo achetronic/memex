@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
+
+ARG VERSION=dev
 
 RUN apk add --no-cache git ca-certificates
 
@@ -23,7 +25,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o memex-mcp ./cmd/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s -X main.version=${VERSION}" -o memex-mcp ./cmd/
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 

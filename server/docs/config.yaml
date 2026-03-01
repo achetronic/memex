@@ -19,7 +19,7 @@ embeddings:
   base_url: "http://localhost:11434"   # any OpenAI-compatible API (Ollama, OpenAI, Groq...)
   api_key: "ollama"                    # use any non-empty string for Ollama, real key for OpenAI
   model: "nomic-embed-text"            # must be available in the provider
-  dim: 768                             # must match the model output
+  dimensions: 768                       # must match the model output
 
 worker:
   pool_size: 3      # concurrent ingestion workers

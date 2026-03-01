@@ -17,7 +17,7 @@ No cloud dependency, no vendor lock-in — just your data, your server, and an O
 - **Namespaces**: logical partitions — each document belongs to a namespace, queries are always scoped
 - **API key auth**: optional per-namespace key validation, configured in a YAML file with env var expansion
 - **Resilient worker**: configurable pool size, exponential backoff retries, graceful failure reporting
-- **REST API**: fully documented with Swagger UI at `/swagger/index.html`
+- **REST API**: fully documented with Swagger UI at `/api/v1/swagger/index.html`
 - **Vue 3 frontend**: upload, manage and search documents — served by the Go binary itself
 - **Single docker-compose**: postgres (with pgvector) + memex, ready to run
 
@@ -25,19 +25,66 @@ No cloud dependency, no vendor lock-in — just your data, your server, and an O
 
 ## Quick Start
 
+**1. Clone the repository**
+
 ```bash
-# Clone the repository
 git clone https://github.com/achetronic/memex
 cd memex
+```
 
-# Set your embeddings API base URL if it's not on localhost (e.g. Ollama)
-export OPENAI_BASE_URL=http://your-ollama-host:11434
+**2. Create a `config.yaml`**
 
-# Start everything
+Copy the example and adjust to your setup — at minimum, point `embeddings.base_url` at your Ollama (or any OpenAI-compatible) instance:
+
+```yaml
+server:
+  port: 8080
+
+log:
+  format: json
+  level:  info
+
+database:
+  url: "postgres://memex:memex@postgres:5432/memex"
+
+embeddings:
+  base_url:   "http://host.docker.internal:11434"  # Ollama on the host
+  api_key:    "ollama"
+  model:      "nomic-embed-text"
+  dimensions: 768
+
+worker:
+  pool_size:   3
+  max_retries: 3
+
+chunker:
+  size:    512
+  overlap: 64
+
+search:
+  default_limit: 5
+
+upload:
+  max_size_mb: 50
+
+namespaces:
+  - name: general
+
+# auth:              # Uncomment to enable API key authentication
+#   api_keys:
+#     - key: "${MEMEX_API_KEY}"
+#       namespaces: ["*"]
+```
+
+See [`server/docs/config.yaml`](server/docs/config.yaml) for the full reference.
+
+**3. Start everything**
+
+```bash
 docker compose up -d
 ```
 
-Open http://localhost:8080 for the UI or http://localhost:8080/swagger/index.html for the API docs.
+Open http://localhost:8080 for the UI or http://localhost:8080/api/v1/swagger/index.html for the API docs.
 
 ---
 

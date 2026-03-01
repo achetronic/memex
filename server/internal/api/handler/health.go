@@ -59,7 +59,7 @@ func (h *Health) Check(w http.ResponseWriter, r *http.Request) {
 	healthy := true
 
 	// Check database connectivity.
-	if _, err := h.store.ListDocuments(ctx, "", ""); err != nil {
+	if _, err := h.store.ListDocuments(ctx, "", db.ListDocumentsParams{Limit: 1}); err != nil {
 		services["database"] = "unhealthy: " + err.Error()
 		healthy = false
 	} else {

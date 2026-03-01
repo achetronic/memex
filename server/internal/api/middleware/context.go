@@ -17,6 +17,7 @@ package middleware
 import "context"
 
 type namespaceKeyType struct{}
+type allowedNamespacesKeyType struct{}
 
 // WithNamespace stores the validated namespace in the context so handlers can
 // retrieve it without parsing headers again.
@@ -28,5 +29,18 @@ func WithNamespace(ctx context.Context, namespace string) context.Context {
 // Returns an empty string if no namespace is in context.
 func NamespaceFromContext(ctx context.Context) string {
 	ns, _ := ctx.Value(namespaceKeyType{}).(string)
+	return ns
+}
+
+// WithAllowedNamespaces stores the list of namespaces the API key is allowed
+// to access. Used by the Info handler to return scoped namespace list.
+func WithAllowedNamespaces(ctx context.Context, namespaces []string) context.Context {
+	return context.WithValue(ctx, allowedNamespacesKeyType{}, namespaces)
+}
+
+// AllowedNamespacesFromContext retrieves the allowed namespaces stored by
+// WithAllowedNamespaces. Returns nil if not set.
+func AllowedNamespacesFromContext(ctx context.Context) []string {
+	ns, _ := ctx.Value(allowedNamespacesKeyType{}).([]string)
 	return ns
 }

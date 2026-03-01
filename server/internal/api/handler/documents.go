@@ -15,10 +15,13 @@
 package handler
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	mw "github.com/achetronic/memex/internal/api/middleware"
@@ -50,7 +53,8 @@ func NewDocuments(store *db.Store, worker *ingestion.Worker, log *slog.Logger, m
 // Upload godoc
 //
 //	@Summary		Upload a document
-//	@Description	Accepts a multipart/form-data upload, enqueues the document for ingestion, and returns its ID and initial status.
+//	@Description	Accepts a multipart/form-data upload, checks for duplicates by SHA-256 hash,
+//	@Description	enqueues the document for ingestion, and returns its ID and initial status.
 //	@Tags			documents
 //	@Accept			multipart/form-data
 //	@Produce		json
@@ -58,6 +62,7 @@ func NewDocuments(store *db.Store, worker *ingestion.Worker, log *slog.Logger, m
 //	@Param			file				formData	file	true	"Document file to ingest"
 //	@Success		202					{object}	db.Document
 //	@Failure		400					{object}	errorResponse
+//	@Failure		409					{object}	errorResponse	"Duplicate file"
 //	@Failure		413					{object}	errorResponse
 //	@Failure		422					{object}	errorResponse
 //	@Failure		429					{object}	errorResponse
@@ -88,15 +93,45 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute SHA-256 of the file content for deduplication.
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		h.log.Error("failed to hash file", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not read file")
+		return
+	}
+	fileHash := fmt.Sprintf("%x", hasher.Sum(nil))
+
+	// Seek back to the beginning so the ingestion worker can read the file.
+	if seeker, ok := file.(io.Seeker); ok {
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not process file")
+			return
+		}
+	}
+
+	// Dedup check: reject if the same file (by hash) already exists in this namespace.
+	existing, err := h.store.FindDocumentByHash(r.Context(), namespace, fileHash)
+	if err != nil {
+		h.log.Error("dedup check failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not check for duplicates")
+		return
+	}
+	if existing != nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"duplicate file: %q was already uploaded (id: %s)", existing.Filename, existing.ID,
+		))
+		return
+	}
+
 	format := strings.TrimPrefix(ext, ".")
 
-	doc, err := h.store.CreateDocument(r.Context(), namespace, filename, format)
+	doc, err := h.store.CreateDocument(r.Context(), namespace, filename, format, fileHash)
 	if err != nil {
 		h.log.Error("failed to create document record", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not create document")
 		return
 	}
-
 	job := ingestion.Job{
 		DocumentID: doc.ID,
 		Namespace:  namespace,
@@ -117,25 +152,41 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 // List godoc
 //
 //	@Summary		List documents
-//	@Description	Returns all documents in the active namespace, optionally filtered by status.
+//	@Description	Returns a paginated, sorted list of documents in the active namespace.
 //	@Tags			documents
 //	@Produce		json
 //	@Param			X-Memex-Namespace	header	string	false	"Target namespace"
 //	@Param			status				query	string	false	"Filter by status"	Enums(pending, processing, completed, failed)
-//	@Success		200					{array}		db.Document
+//	@Param			sort_by				query	string	false	"Sort field"		Enums(created_at, filename)
+//	@Param			sort_order			query	string	false	"Sort direction"	Enums(asc, desc)
+//	@Param			limit				query	int		false	"Page size (default 10)"
+//	@Param			offset				query	int		false	"Page offset (default 0)"
+//	@Success		200					{object}	db.DocumentList
 //	@Failure		500					{object}	errorResponse
 //	@Router			/documents [get]
 func (h *Documents) List(w http.ResponseWriter, r *http.Request) {
 	namespace := mw.NamespaceFromContext(r.Context())
-	status := db.DocumentStatus(r.URL.Query().Get("status"))
+	q := r.URL.Query()
 
-	docs, err := h.store.ListDocuments(r.Context(), namespace, status)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+
+	sortBy := db.SortField(q.Get("sort_by"))
+	sortOrder := db.SortOrder(strings.ToUpper(q.Get("sort_order")))
+
+	result, err := h.store.ListDocuments(r.Context(), namespace, db.ListDocumentsParams{
+		Status:    db.DocumentStatus(q.Get("status")),
+		SortBy:    sortBy,
+		SortOrder: sortOrder,
+		Limit:     limit,
+		Offset:    offset,
+	})
 	if err != nil {
 		h.log.Error("failed to list documents", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not list documents")
 		return
 	}
-	writeJSON(w, http.StatusOK, docs)
+	writeJSON(w, http.StatusOK, result)
 }
 
 // Get godoc

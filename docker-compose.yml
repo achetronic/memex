@@ -3,16 +3,16 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: memex
+      POSTGRES_USER:     memex
       POSTGRES_PASSWORD: memex
-      POSTGRES_DB: memex
+      POSTGRES_DB:       memex
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U memex"]
+      test:     ["CMD-SHELL", "pg_isready -U memex"]
       interval: 5s
-      timeout: 5s
-      retries: 10
+      timeout:  5s
+      retries:  10
 
   memex:
     image: ghcr.io/achetronic/memex:latest
@@ -22,20 +22,9 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
-    environment:
-      DATABASE_URL: postgres://memex:memex@postgres:5432/memex
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:11434}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-ollama}
-      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-nomic-embed-text}
-      OPENAI_EMBEDDING_DIM: ${OPENAI_EMBEDDING_DIM:-768}
-      LOG_FORMAT: ${LOG_FORMAT:-json}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      WORKER_POOL_SIZE: ${WORKER_POOL_SIZE:-3}
-      WORKER_MAX_RETRIES: ${WORKER_MAX_RETRIES:-3}
-      CHUNK_SIZE: ${CHUNK_SIZE:-512}
-      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-64}
-      SEARCH_DEFAULT_LIMIT: ${SEARCH_DEFAULT_LIMIT:-5}
-      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    command: ["-config", "/config.yaml"]
 
 volumes:
   pgdata:

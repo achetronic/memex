@@ -1,0 +1,129 @@
+<svg
+   viewBox="0 0 120 120"
+   width="400"
+   height="400"
+   fill="none"
+   stroke="#2d1f2a"
+   stroke-linecap="round"
+   stroke-linejoin="round"
+   xmlns="http://www.w3.org/2000/svg">
+
+  <!--
+    v21: igual que v20 pero los bucles se desplazan
+    más lejos del centro en todas direcciones.
+    Más territorio cubierto, más dispersión,
+    más sensación de que la curva se va de viaje.
+  -->
+
+  <!-- FONDO -->
+  <rect x="0" y="0" width="120" height="120" fill="#4caf50" stroke="none"/>
+  <polygon points="0,0  60,0  40,50  0,60"
+    fill="#e8534a" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="60,0  120,0  120,50  80,40  60,0"
+    fill="#4a90d9" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="0,60  40,50  50,90  20,110  0,100"
+    fill="#f9e04b" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="40,50  80,40  100,70  70,100  50,90"
+    fill="#a8d8ea" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="80,40  120,50  120,120  100,120  100,70"
+    fill="#f4c430" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="0,100  20,110  10,120  0,120"
+    fill="#4a90d9" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="20,110  50,90  70,100  60,120  10,120"
+    fill="#7bc67e" stroke="#2d1f2a" stroke-width="1.0"/>
+  <polygon points="70,100  100,70  100,120  60,120"
+    fill="#e8534a" stroke="#2d1f2a" stroke-width="1.0"/>
+
+  <!-- OREJA -->
+  <polygon points="46,18  16,14  6,40  10,66  28,72  46,58  52,32"
+    fill="#e8829e" stroke="#2d1f2a" stroke-width="2.0"/>
+  <polygon points="42,28  20,30  14,54  28,64  44,52  46,34"
+    fill="#fbb6ce" stroke="#2d1f2a" stroke-width="1.4"/>
+
+  <!-- CABEZA -->
+  <polygon points="50,18  56,36  76,32  86,16  70,6  54,8"
+    fill="#fce8ef" stroke="#2d1f2a" stroke-width="2.4"/>
+  <polygon points="46,20  52,18  56,36  58,58  54,72  46,62  44,42"
+    fill="#f4a0b8" stroke="#2d1f2a" stroke-width="2.2"/>
+  <polygon points="76,32  86,16  100,22  104,40  94,50  82,46"
+    fill="#fff0f3" stroke="#2d1f2a" stroke-width="2.4"/>
+
+  <!-- RELLENO — zona central de la cara entre cráneo, nuca y frente -->
+  <polygon points="56,36  76,32  82,46  80,54  58,58"
+    fill="#fce8ef" stroke="#2d1f2a" stroke-width="1.8"/>
+
+  <!-- RELLENO — hueco triangular entre frente y trompa -->
+  <polygon points="82,46  94,50  80,54"
+    fill="#fce8ef" stroke="#2d1f2a" stroke-width="1.8"/>
+
+  <!-- MORRO + TROMPA -->
+  <path
+    d="M 94,50
+       L 104,40
+       L 110,54
+       C 114,64  116,76  112,90
+       C 108,104  100,114  92,114
+       C 86,114  82,108  86,102
+       C 88,97  94,100  92,106
+       L 84,62
+       L 80,54
+       Z"
+    fill="#fbb6ce" stroke="#2d1f2a" stroke-width="2.2"/>
+  <polygon points="80,54  84,62  76,72  62,74  54,72  58,58"
+    fill="#e8829e" stroke="#2d1f2a" stroke-width="2.2"/>
+
+  <!-- ══════════════════════════════════════
+       CEREBRO — garabato errático, más disperso.
+       Cada bucle viaja más lejos del anterior,
+       cambia de dirección bruscamente.
+       Confinado dentro del cráneo (~60-78, 13-29).
+       ══════════════════════════════════════ -->
+
+  <ellipse cx="64" cy="18" rx="9" ry="7"
+    fill="#fbb6ce" stroke="none"/>
+
+  <path
+    d="M 63,20
+       C 59,17  58,12  62,10
+       C 66,8  70,11  69,15
+       C 68,18  65,20  62,18
+
+       C 64,15  68,11  72,13
+       C 75,15  75,20  72,23
+       C 69,25  65,24  64,21
+
+       C 62,18  59,15  57,18
+       C 55,21  57,25  60,26
+       C 63,27  66,25  66,22
+
+       C 67,19  71,16  74,18
+       C 76,20  76,25  73,26
+       C 70,27  66,25  65,22
+
+       C 64,19  62,15  59,14
+       C 56,13  54,16  55,19
+       C 56,22  59,24  62,23
+
+       C 65,22  68,19  69,16
+       C 70,13  73,11  75,14
+       C 77,17  76,21  73,23
+       C 70,25  67,24  65,21
+
+       C 63,18  60,16  58,18
+       C 56,20  57,24  60,25
+       C 63,26  66,24  67,21
+       C 68,18  67,14  64,13
+       C 61,12  58,14  58,17"
+    fill="none"
+    stroke="#2d1f2a"
+    stroke-width="1.4"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <!-- OJO -->
+  <polygon points="90,18  97,22  90,26  83,22"
+    fill="#2d1f2a" stroke="none"/>
+  <circle cx="90" cy="22" r="2.2" fill="#fff0f3" stroke="none"/>
+  <circle cx="90" cy="22" r="1.0" fill="#2d1f2a" stroke="none"/>
+
+</svg>

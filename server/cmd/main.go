@@ -80,7 +80,7 @@ func run() error {
 
 	// 4. Connect to PostgreSQL and run migrations.
 	ctx := context.Background()
-	store, err := db.NewStore(ctx, cfg.Database.URL)
+	store, err := db.NewStore(ctx, cfg.Database.URL, cfg.Embeddings.Dimensions)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}

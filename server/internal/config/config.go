@@ -47,7 +47,7 @@ type EmbeddingsConfig struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
-	Dim     int    `yaml:"dim"`
+	Dimensions int    `yaml:"dimensions"`
 }
 
 // WorkerConfig holds ingestion worker pool settings.
@@ -119,7 +119,7 @@ func defaults() Config {
 			BaseURL: "http://localhost:11434",
 			APIKey:  "ollama",
 			Model:   "nomic-embed-text",
-			Dim:     768,
+			Dimensions: 768,
 		},
 		Worker: WorkerConfig{
 			PoolSize:   3,
@@ -212,4 +212,16 @@ func (c *Config) KeyHasNamespaceAccess(key, namespace string) bool {
 		}
 	}
 	return false
+}
+
+// GetApiKeyNamespaces returns the list of namespaces the given API key is allowed
+// to access. Returns nil if the key does not exist. A single "*" entry means
+// the key has access to all declared namespaces.
+func (c *Config) GetApiKeyNamespaces(key string) []string {
+	for _, k := range c.Auth.APIKeys {
+		if k.Key == key {
+			return k.Namespaces
+		}
+	}
+	return nil
 }

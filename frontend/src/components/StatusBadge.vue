@@ -15,7 +15,9 @@
 -->
 
 <template>
-  <span class="status-badge" :class="status">{{ status }}</span>
+  <span class="status-badge" :class="status">
+    <span class="status-dot"></span>{{ status }}
+  </span>
 </template>
 
 <script setup>
@@ -24,16 +26,37 @@ defineProps({ status: String })
 
 <style scoped>
 .status-badge {
-  display: inline-block;
-  padding: 0.15rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: capitalize;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 20px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.pending    { background: #fef9c3; color: #854d0e; }
-.processing { background: #dbeafe; color: #1d4ed8; }
-.completed  { background: #dcfce7; color: #166534; }
-.failed     { background: #fee2e2; color: #991b1b; }
+.status-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pending    { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.pending .status-dot    { background: #f9e04b; }
+
+.processing { background: #fff0f3; color: var(--pink-hot); border: 1px solid #f4c0cc; }
+.processing .status-dot { background: var(--pink-hot); animation: pulse 1.2s ease-in-out infinite; }
+
+.completed  { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.completed .status-dot  { background: #4caf50; }
+
+.failed     { background: #fff1f1; color: #991b1b; border: 1px solid #fcc; }
+.failed .status-dot     { background: #e8534a; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
 </style>

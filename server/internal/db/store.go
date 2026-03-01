@@ -19,21 +19,25 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Store wraps a pgxpool.Pool and exposes all database operations.
 // Use NewStore to create an instance.
 type Store struct {
-	pool *pgxpool.Pool
+	pool       *pgxpool.Pool
+	dimensions int
 }
 
 // NewStore creates a connection pool using the given DSN and runs
-// all pending migrations. Returns an error if the connection or
-// migrations fail.
-func NewStore(ctx context.Context, dsn string) (*Store, error) {
+// all pending migrations. dimensions is the vector size produced by the
+// configured embedding model (e.g. 768 for nomic-embed-text).
+// Returns an error if the connection or migrations fail.
+func NewStore(ctx context.Context, dsn string, dimensions int) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("creating connection pool: %w", err)
@@ -43,7 +47,7 @@ func NewStore(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
-	s := &Store{pool: pool}
+	s := &Store{pool: pool, dimensions: dimensions}
 	if err := s.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
@@ -58,8 +62,46 @@ func (s *Store) Close() {
 
 // migrate applies the schema idempotently. It enables pgvector, creates the
 // documents and chunks tables if they don't exist, and adds the vector index.
-// Safe to run on every startup.
+// Safe to run on every startup — fails fast if the configured dimensions do
+// not match the existing column to prevent silent data corruption.
 func (s *Store) migrate(ctx context.Context) error {
+	// Guard: if the chunks table already exists and the embedding column has
+	// explicit dimensions, verify they match the configured value. A mismatch
+	// means the user changed embeddings.dimensions without re-ingesting data,
+	// which would silently corrupt search results.
+	//
+	// We read the column type as text (e.g. "vector(768)") and parse N directly
+	// to avoid ambiguity with atttypmod encoding conventions.
+	var colType string
+	err := s.pool.QueryRow(ctx, `
+		SELECT pg_catalog.format_type(a.atttypid, a.atttypmod)
+		FROM pg_attribute a
+		JOIN pg_class c ON c.oid = a.attrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relname = 'chunks'
+		  AND n.nspname = 'public'
+		  AND a.attname = 'embedding'
+		  AND a.attnum > 0
+		  AND NOT a.attisdropped
+	`).Scan(&colType)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Table does not exist yet — nothing to validate.
+	case err != nil:
+		return fmt.Errorf("checking existing embedding dimensions: %w", err)
+	default:
+		// colType is e.g. "vector(768)" or "vector" (no dimensions).
+		// Only validate when dimensions are explicitly set.
+		var current int
+		if n, _ := fmt.Sscanf(colType, "vector(%d)", &current); n == 1 && current != s.dimensions {
+			return fmt.Errorf(
+				"embedding dimension mismatch: database has vector(%d) but config says %d — "+
+					"change embeddings.dimensions back to %d or drop the chunks table and re-ingest",
+				current, s.dimensions, current,
+			)
+		}
+	}
+
 	statements := []string{
 		`CREATE EXTENSION IF NOT EXISTS vector`,
 
@@ -78,20 +120,26 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Idempotent migration: add namespace column to pre-existing tables.
 		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
 
-		`CREATE TABLE IF NOT EXISTS chunks (
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS chunks (
 			id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			document_id   UUID        NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
 			namespace     TEXT        NOT NULL DEFAULT '',
 			chunk_index   INTEGER     NOT NULL,
 			content       TEXT        NOT NULL,
-			embedding     vector,
+			embedding     vector(%d),
 			metadata      JSONB       NOT NULL DEFAULT '{}',
 			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
+		)`, s.dimensions),
 
 		`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
 
-		// Partial index: only index chunks that have an embedding.
+		// Idempotent migration: if the embedding column exists without explicit
+		// dimensions (created before v0.2.0), set them now. Safe because the
+		// dimension guard above already confirmed there is no mismatch.
+		fmt.Sprintf(`ALTER TABLE chunks ALTER COLUMN embedding TYPE vector(%d)`, s.dimensions),
+
+		// Partial index on chunks with a fixed-dimension embedding column.
+		// ivfflat requires the column type to have explicit dimensions (vector(N)).
 		`CREATE INDEX IF NOT EXISTS chunks_embedding_idx
 			ON chunks USING ivfflat (embedding vector_cosine_ops)
 			WHERE embedding IS NOT NULL`,
@@ -101,6 +149,12 @@ func (s *Store) migrate(ctx context.Context) error {
 
 		// Index for fast namespace-filtered chunk searches.
 		`CREATE INDEX IF NOT EXISTS chunks_namespace_idx ON chunks (namespace)`,
+
+		// Idempotent migration: add file_hash column for deduplication.
+		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_hash TEXT`,
+
+		// Index for fast dedup lookups by hash within a namespace.
+		`CREATE INDEX IF NOT EXISTS documents_namespace_hash_idx ON documents (namespace, file_hash) WHERE file_hash IS NOT NULL`,
 	}
 
 	for _, stmt := range statements {

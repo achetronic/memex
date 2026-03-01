@@ -47,7 +47,7 @@ type RouterConfig struct {
 }
 
 // NewRouter creates and returns the fully configured chi router.
-// It registers all API routes under /api/v1, the Swagger UI under /swagger,
+// It registers all API routes and the Swagger UI under /api/v1,
 // and serves the embedded Vue frontend from the root.
 func NewRouter(cfg RouterConfig) http.Handler {
 	r := chi.NewRouter()
@@ -58,28 +58,37 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Use(mw.Recovery(cfg.Log))
 	r.Use(mw.Logger(cfg.Log))
 
-	// Swagger UI.
-	r.Get("/swagger/*", httpSwagger.WrapHandler)
-
-	// API v1 — auth middleware runs first for every route in this group.
+	// API v1.
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(mw.Auth(cfg.Config, cfg.Log))
+		// Swagger UI — no auth required.
+		r.Get("/swagger/*", httpSwagger.WrapHandler)
 
-		docs := handler.NewDocuments(cfg.Store, cfg.Worker, cfg.Log, cfg.MaxUploadMB)
-		r.Post("/documents", docs.Upload)
-		r.Get("/documents", docs.List)
-		r.Get("/documents/{id}", docs.Get)
-		r.Delete("/documents/{id}", docs.Delete)
+		// GET /info — key-only auth (no namespace header required).
+		r.Group(func(r chi.Router) {
+			r.Use(mw.AuthKeyOnly(cfg.Config, cfg.Log))
+			r.Get("/info", handler.NewInfo(cfg.Config, cfg.Log).Get)
+		})
 
-		srch := handler.NewSearch(cfg.Store, cfg.Embedder, cfg.Log, cfg.DefaultLimit)
-		r.Post("/search", srch.Query)
+		// All other endpoints — full auth (key + namespace).
+		r.Group(func(r chi.Router) {
+			r.Use(mw.Auth(cfg.Config, cfg.Log))
 
-		health := handler.NewHealth(cfg.Store, cfg.Embedder, cfg.Log)
-		r.Get("/health", health.Check)
+			docs := handler.NewDocuments(cfg.Store, cfg.Worker, cfg.Log, cfg.MaxUploadMB)
+			r.Post("/documents", docs.Upload)
+			r.Get("/documents", docs.List)
+			r.Get("/documents/{id}", docs.Get)
+			r.Delete("/documents/{id}", docs.Delete)
+
+			srch := handler.NewSearch(cfg.Store, cfg.Embedder, cfg.Log, cfg.DefaultLimit)
+			r.Post("/search", srch.Query)
+
+			health := handler.NewHealth(cfg.Store, cfg.Embedder, cfg.Log)
+			r.Get("/health", health.Check)
+		})
 	})
 
 	// Frontend: serve embedded Vue dist/ from root.
-	// Requests not matching /api or /swagger fall through to the SPA.
+	// Requests not matching /api/v1 fall through to the SPA.
 	r.Handle("/*", http.FileServer(http.FS(cfg.FrontendFS)))
 
 	return r

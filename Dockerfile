@@ -11,9 +11,11 @@ RUN npm run build
 
 
 # ─── Stage 2: Build Go binary ─────────────────────────────────────────────────
-FROM golang:1.22-alpine AS go-builder
+FROM golang:1.24-alpine AS go-builder
 
-# Install build dependencies for CGO-free build.
+ARG VERSION=dev
+
+# Install build dependencies.
 RUN apk add --no-cache git
 
 WORKDIR /app/server
@@ -26,13 +28,13 @@ RUN go mod download
 COPY server/ ./
 COPY --from=frontend-builder /app/frontend/dist ./cmd/frontend_dist
 
-# Generate swagger docs.
+# Generate swagger docs into docs/api/ to match the import path in router.go.
 RUN go install github.com/swaggo/swag/cmd/swag@latest && \
-    swag init -g cmd/main.go -o docs/
+    swag init -g cmd/main.go -o docs/api/
 
 # Build a fully static binary.
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
+    -ldflags="-s -w -X main.version=${VERSION}" \
     -o /memex ./cmd/
 
 

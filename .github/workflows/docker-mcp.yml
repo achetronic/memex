@@ -1,17 +1,19 @@
 name: Docker MCP Image
 
 on:
-  push:
-    tags:
-      - 'v*'
-    branches:
-      - main
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Image tag (e.g. v0.1.0). Only used when triggered manually.'
-        required: false
+        description: "Image tag (e.g. v0.2.0)"
+        required: true
         type: string
+      use_main:
+        description: "Check out main instead of the tag (use if the tag is broken)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,7 +25,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # Resolve the version and ref to use throughout the workflow.
+      # - On release published: version = tag name, ref = tag
+      # - On manual dispatch:   version = input, ref = tag (or main if use_main=true)
+      - name: Resolve version and ref
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            if [ "${{ inputs.use_main }}" = "true" ]; then
+              REF="main"
+            else
+              REF="${{ inputs.version }}"
+            fi
+          else
+            VERSION="${{ github.event.release.tag_name }}"
+            REF="${{ github.event.release.tag_name }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -42,12 +67,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/achetronic/memex/memex-mcp
+          images: ghcr.io/achetronic/memex-mcp
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-,enable=true
+            type=raw,value=${{ steps.resolve.outputs.version }}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -57,5 +80,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.resolve.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -43,6 +43,8 @@ type RouterConfig struct {
 	Config       *config.Config
 	MaxUploadMB  int64
 	DefaultLimit int
+	DataDir      string
+	InstanceID   string
 	FrontendFS   fs.FS
 }
 
@@ -73,7 +75,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(mw.Auth(cfg.Config, cfg.Log))
 
-			docs := handler.NewDocuments(cfg.Store, cfg.Worker, cfg.Log, cfg.MaxUploadMB)
+			docs := handler.NewDocuments(cfg.Store, cfg.Worker, cfg.Log, cfg.MaxUploadMB, cfg.DataDir, cfg.InstanceID)
 			r.Post("/documents", docs.Upload)
 			r.Get("/documents", docs.List)
 			r.Get("/documents/{id}", docs.Get)

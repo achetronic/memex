@@ -155,6 +155,12 @@ func (s *Store) migrate(ctx context.Context) error {
 
 		// Index for fast dedup lookups by hash within a namespace.
 		`CREATE INDEX IF NOT EXISTS documents_namespace_hash_idx ON documents (namespace, file_hash) WHERE file_hash IS NOT NULL`,
+
+		// Idempotent migration: add file_path column for on-disk file persistence.
+		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT`,
+
+		// Idempotent migration: add instance_id to track which instance owns the file.
+		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS instance_id TEXT`,
 	}
 
 	for _, stmt := range statements {

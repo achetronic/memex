@@ -25,22 +25,66 @@ import (
 	"github.com/ledongthuc/pdf"
 )
 
+// ─── PDF ─────────────────────────────────────────────────────────────────────
+
 // PDFParser extracts text from PDF files using the ledongthuc/pdf library.
+// It validates the PDF header, sanitises known quirks, and recovers from
+// library panics so a malformed file never crashes the worker.
 type PDFParser struct{}
 
 func (p *PDFParser) Extensions() []string { return []string{".pdf"} }
 
-// Parse reads a PDF from r, extracts text from all pages, and returns
-// the concatenated content with page breaks as newlines.
 func (p *PDFParser) Parse(r io.Reader) (string, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("reading PDF bytes: %w", err)
 	}
 
-	reader, err := pdf.NewReader(bytes.NewReader(b), int64(len(b)))
+	b = sanitisePDFHeader(b)
+
+	if err := validateMagic(b, []byte("%PDF-")); err != nil {
+		return "", fmt.Errorf("invalid PDF: %w", err)
+	}
+
+	text, err := safeParsePDF(b)
 	if err != nil {
-		return "", fmt.Errorf("opening PDF: %w", err)
+		return "", err
+	}
+	return text, nil
+}
+
+// sanitisePDFHeader trims leading whitespace and strips trailing spaces on
+// the first line. Some PDF generators (e.g. libtiff/tiff2pdf) emit headers
+// like "%PDF-1.4 \n" which are valid per viewers but rejected by strict
+// parsers.
+func sanitisePDFHeader(b []byte) []byte {
+	b = bytes.TrimLeft(b, " \t\r\n")
+
+	if idx := bytes.IndexByte(b, '\n'); idx != -1 && idx < 20 {
+		header := bytes.TrimRight(b[:idx], " \t\r")
+		if !bytes.Equal(header, b[:idx]) {
+			clean := make([]byte, 0, len(b))
+			clean = append(clean, header...)
+			clean = append(clean, b[idx:]...)
+			return clean
+		}
+	}
+	return b
+}
+
+// safeParsePDF wraps the PDF library calls in a panic-recovery boundary.
+// ledongthuc/pdf is known to panic on malformed images and certain CJK
+// encodings instead of returning errors.
+func safeParsePDF(b []byte) (text string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("PDF library panic: %v", r)
+		}
+	}()
+
+	reader, rerr := pdf.NewReader(bytes.NewReader(b), int64(len(b)))
+	if rerr != nil {
+		return "", fmt.Errorf("opening PDF: %w", rerr)
 	}
 
 	var buf strings.Builder
@@ -49,30 +93,31 @@ func (p *PDFParser) Parse(r io.Reader) (string, error) {
 		if page.V.IsNull() {
 			continue
 		}
-		text, err := page.GetPlainText(nil)
-		if err != nil {
-			// Non-fatal: skip unreadable pages and continue.
+		pageText, perr := page.GetPlainText(nil)
+		if perr != nil {
 			continue
 		}
-		buf.WriteString(text)
+		buf.WriteString(pageText)
 		buf.WriteRune('\n')
 	}
-
 	return buf.String(), nil
 }
 
+// ─── DOCX ────────────────────────────────────────────────────────────────────
+
 // DOCXParser extracts text from .docx files (Office Open XML format).
-// A .docx is a ZIP archive containing word/document.xml with the body text.
 type DOCXParser struct{}
 
 func (p *DOCXParser) Extensions() []string { return []string{".docx"} }
 
-// Parse reads a .docx from r, extracts word/document.xml from the ZIP archive,
-// and returns the concatenated paragraph text.
 func (p *DOCXParser) Parse(r io.Reader) (string, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("reading DOCX bytes: %w", err)
+	}
+
+	if err := validateMagic(b, zipMagic); err != nil {
+		return "", fmt.Errorf("invalid DOCX: %w", err)
 	}
 
 	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
@@ -80,21 +125,24 @@ func (p *DOCXParser) Parse(r io.Reader) (string, error) {
 		return "", fmt.Errorf("opening DOCX ZIP: %w", err)
 	}
 
-	return extractOOXMLText(zr, "word/document.xml")
+	return extractXMLText(zr, "word/document.xml", docxBreakElements)
 }
 
+// ─── ODT ─────────────────────────────────────────────────────────────────────
+
 // ODTParser extracts text from .odt files (OpenDocument Text format).
-// An .odt is a ZIP archive containing content.xml with the document body.
 type ODTParser struct{}
 
 func (p *ODTParser) Extensions() []string { return []string{".odt"} }
 
-// Parse reads a .odt from r, extracts content.xml from the ZIP archive,
-// and returns the concatenated text content.
 func (p *ODTParser) Parse(r io.Reader) (string, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("reading ODT bytes: %w", err)
+	}
+
+	if err := validateMagic(b, zipMagic); err != nil {
+		return "", fmt.Errorf("invalid ODT: %w", err)
 	}
 
 	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
@@ -102,13 +150,53 @@ func (p *ODTParser) Parse(r io.Reader) (string, error) {
 		return "", fmt.Errorf("opening ODT ZIP: %w", err)
 	}
 
-	return extractOOXMLText(zr, "content.xml")
+	return extractXMLText(zr, "content.xml", odtBreakElements)
 }
 
-// extractOOXMLText opens the named file inside a ZIP reader, decodes its XML,
-// and returns all CharData (text) content concatenated as plain text.
-// This works for both DOCX (word/document.xml) and ODT (content.xml).
-func extractOOXMLText(zr *zip.Reader, target string) (string, error) {
+// ─── shared helpers ──────────────────────────────────────────────────────────
+
+var zipMagic = []byte("PK")
+
+// docxBreakElements are OOXML elements that represent paragraph/line
+// boundaries. When the decoder encounters a closing tag for any of these,
+// a newline is emitted.
+var docxBreakElements = map[string]bool{
+	"p":  true, // <w:p> — paragraph
+	"br": true, // <w:br> — explicit break
+	"tr": true, // <w:tr> — table row
+}
+
+// odtBreakElements are ODF elements that represent paragraph/line boundaries.
+var odtBreakElements = map[string]bool{
+	"p":         true, // <text:p>
+	"h":         true, // <text:h> — heading
+	"line-break": true, // <text:line-break>
+	"table-row": true, // <table:table-row>
+}
+
+// validateMagic checks that b starts with the expected magic bytes.
+func validateMagic(b, magic []byte) error {
+	if len(b) < len(magic) {
+		return fmt.Errorf("file too small (%d bytes)", len(b))
+	}
+	if !bytes.HasPrefix(b, magic) {
+		return fmt.Errorf("unexpected file signature: got %q, want %q", safeHead(b, len(magic)), magic)
+	}
+	return nil
+}
+
+// safeHead returns up to n bytes from b for diagnostic messages.
+func safeHead(b []byte, n int) []byte {
+	if len(b) < n {
+		return b
+	}
+	return b[:n]
+}
+
+// extractXMLText opens the named file inside a ZIP archive, walks its XML
+// tree, and collects all text content. Elements listed in breakTags cause a
+// newline to be emitted when closed, preserving paragraph structure.
+func extractXMLText(zr *zip.Reader, target string, breakTags map[string]bool) (string, error) {
 	for _, f := range zr.File {
 		if f.Name != target {
 			continue
@@ -131,16 +219,36 @@ func extractOOXMLText(zr *zip.Reader, target string) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("decoding XML in %s: %w", target, err)
 			}
-			if cd, ok := tok.(xml.CharData); ok {
-				text := strings.TrimSpace(string(cd))
+
+			switch t := tok.(type) {
+			case xml.CharData:
+				text := strings.TrimSpace(string(t))
 				if text != "" {
 					buf.WriteString(text)
-					buf.WriteRune('\n')
+					buf.WriteRune(' ')
+				}
+			case xml.EndElement:
+				if breakTags[t.Name.Local] {
+					if buf.Len() > 0 {
+						trimTrailingSpace(&buf)
+						buf.WriteRune('\n')
+					}
 				}
 			}
 		}
-		return buf.String(), nil
+
+		return strings.TrimSpace(buf.String()), nil
 	}
 
 	return "", fmt.Errorf("file %q not found in archive", target)
+}
+
+// trimTrailingSpace removes a single trailing space from a Builder, used to
+// clean up the space added after each CharData token before a line break.
+func trimTrailingSpace(buf *strings.Builder) {
+	s := buf.String()
+	if strings.HasSuffix(s, " ") {
+		buf.Reset()
+		buf.WriteString(s[:len(s)-1])
+	}
 }

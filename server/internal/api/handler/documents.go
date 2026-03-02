@@ -15,12 +15,12 @@
 package handler
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,15 +39,19 @@ type Documents struct {
 	worker         *ingestion.Worker
 	log            *slog.Logger
 	maxUploadBytes int64
+	dataDir        string
+	instanceID     string
 }
 
 // NewDocuments constructs a Documents handler group.
-func NewDocuments(store *db.Store, worker *ingestion.Worker, log *slog.Logger, maxUploadMB int64) *Documents {
+func NewDocuments(store *db.Store, worker *ingestion.Worker, log *slog.Logger, maxUploadMB int64, dataDir, instanceID string) *Documents {
 	return &Documents{
 		store:          store,
 		worker:         worker,
 		log:            log,
 		maxUploadBytes: maxUploadMB * 1024 * 1024,
+		dataDir:        dataDir,
+		instanceID:     instanceID,
 	}
 }
 
@@ -124,8 +128,18 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 
 	format := strings.TrimPrefix(ext, ".")
 
-	doc, err := h.store.CreateDocument(r.Context(), namespace, filename, format, fileHash)
+	docID := uuid.New()
+	filePath := filepath.Join(h.dataDir, docID.String()+"."+format)
+
+	if err := os.WriteFile(filePath, fileBytes, 0o640); err != nil {
+		h.log.Error("failed to persist file to disk", "path", filePath, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not persist file")
+		return
+	}
+
+	doc, err := h.store.CreateDocument(r.Context(), namespace, filename, format, fileHash, filePath, h.instanceID)
 	if err != nil {
+		_ = os.Remove(filePath)
 		h.log.Error("failed to create document record", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not create document")
 		return
@@ -134,12 +148,12 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 		DocumentID: doc.ID,
 		Namespace:  namespace,
 		Filename:   filename,
-		Content:    bytes.NewReader(fileBytes),
+		FilePath:   filePath,
 	}
 
 	if !h.worker.Enqueue(job) {
-		// Queue full — clean up the created record to avoid orphans.
 		_ = h.store.DeleteDocument(r.Context(), namespace, doc.ID)
+		_ = os.Remove(filePath)
 		writeError(w, http.StatusTooManyRequests, "ingestion queue is full, try again later")
 		return
 	}
@@ -239,9 +253,19 @@ func (h *Documents) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteDocument(r.Context(), namespace, id); err != nil {
+	doc, err := h.store.GetDocument(r.Context(), namespace, id)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
 		return
+	}
+
+	if err := h.store.DeleteDocument(r.Context(), namespace, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete document")
+		return
+	}
+
+	if doc.FilePath != nil {
+		_ = os.Remove(*doc.FilePath)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

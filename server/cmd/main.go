@@ -76,6 +76,7 @@ func run() error {
 		"embeddings_base_url", cfg.Embeddings.BaseURL,
 		"embeddings_model", cfg.Embeddings.Model,
 		"auth_enabled", cfg.IsAuthEnabled(),
+		"instance_id", cfg.Storage.InstanceID,
 	)
 
 	// 4. Connect to PostgreSQL and run migrations.
@@ -108,6 +109,45 @@ func run() error {
 	worker := ingestion.NewWorker(store, emb, chk, log, cfg.Worker.PoolSize, cfg.Worker.MaxRetries, queueSize)
 	log.Info("ingestion worker pool started", "pool_size", cfg.Worker.PoolSize, "queue_size", queueSize)
 
+	// 7b. Ensure data directory exists for file persistence.
+	if err := os.MkdirAll(cfg.Storage.DataDir, 0o750); err != nil {
+		return fmt.Errorf("creating data directory %q: %w", cfg.Storage.DataDir, err)
+	}
+
+	// 7c. Re-enqueue documents that were pending/processing before restart.
+	unfinished, err := store.ListUnfinishedDocuments(ctx, cfg.Storage.InstanceID)
+	if err != nil {
+		log.Warn("failed to list unfinished documents for recovery", "error", err)
+	} else if len(unfinished) > 0 {
+		recovered := 0
+		for _, doc := range unfinished {
+			if doc.FilePath == nil {
+				continue
+			}
+			if _, statErr := os.Stat(*doc.FilePath); statErr != nil {
+				errMsg := "file not found on disk after restart"
+				_ = store.UpdateDocumentStatus(ctx, doc.ID, "failed", &errMsg)
+				log.Warn("recovery: file missing, marked as failed",
+					"document_id", doc.ID, "path", *doc.FilePath)
+				continue
+			}
+			job := ingestion.Job{
+				DocumentID: doc.ID,
+				Namespace:  doc.Namespace,
+				Filename:   doc.Filename,
+				FilePath:   *doc.FilePath,
+			}
+			if worker.Enqueue(job) {
+				recovered++
+			} else {
+				errMsg := "queue full during startup recovery"
+				_ = store.UpdateDocumentStatus(ctx, doc.ID, "failed", &errMsg)
+				log.Warn("recovery: queue full, marked as failed", "document_id", doc.ID)
+			}
+		}
+		log.Info("startup recovery complete", "recovered", recovered, "total_unfinished", len(unfinished))
+	}
+
 	// 8. Build HTTP router.
 	routerCfg := api.RouterConfig{
 		Store:        store,
@@ -117,6 +157,8 @@ func run() error {
 		Config:       cfg,
 		MaxUploadMB:  cfg.Upload.MaxSizeMB,
 		DefaultLimit: cfg.Search.DefaultLimit,
+		DataDir:      cfg.Storage.DataDir,
+		InstanceID:   cfg.Storage.InstanceID,
 		FrontendFS:   frontend,
 	}
 	router := api.NewRouter(routerCfg)

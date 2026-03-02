@@ -76,6 +76,16 @@ func (s *Store) InsertChunks(ctx context.Context, documentID uuid.UUID, namespac
 	return nil
 }
 
+// DeleteChunksByDocument removes all chunks belonging to a document.
+// Used before re-inserting on retry to prevent duplicates.
+func (s *Store) DeleteChunksByDocument(ctx context.Context, documentID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM chunks WHERE document_id = $1`, documentID)
+	if err != nil {
+		return fmt.Errorf("deleting chunks for document %s: %w", documentID, err)
+	}
+	return nil
+}
+
 // Search performs cosine similarity search over chunk embeddings, scoped to the
 // given namespace. Pass an empty string to search across all namespaces.
 // Returns the top `limit` most similar chunks joined with document filename.

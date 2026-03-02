@@ -68,6 +68,12 @@ type SearchConfig struct {
 	DefaultLimit int `yaml:"default_limit"`
 }
 
+// StorageConfig holds file persistence settings for uploaded documents.
+type StorageConfig struct {
+	DataDir    string `yaml:"data_dir"`
+	InstanceID string `yaml:"instance_id"`
+}
+
 // UploadConfig holds upload limits.
 type UploadConfig struct {
 	MaxSizeMB int64 `yaml:"max_size_mb"`
@@ -101,9 +107,20 @@ type Config struct {
 	Worker     WorkerConfig     `yaml:"worker"`
 	Chunker    ChunkerConfig    `yaml:"chunker"`
 	Search     SearchConfig     `yaml:"search"`
+	Storage    StorageConfig    `yaml:"storage"`
 	Upload     UploadConfig     `yaml:"upload"`
 	Namespaces []NamespaceConfig `yaml:"namespaces"`
 	Auth       AuthConfig       `yaml:"auth"`
+}
+
+// defaultInstanceID returns a stable identifier for this process instance.
+// It uses the OS hostname, which in Kubernetes equals the pod name.
+func defaultInstanceID() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
 }
 
 // defaults returns a Config pre-populated with sensible default values.
@@ -133,6 +150,10 @@ func defaults() Config {
 		},
 		Search: SearchConfig{
 			DefaultLimit: 5,
+		},
+		Storage: StorageConfig{
+			DataDir: "data",
+			InstanceID: defaultInstanceID(),
 		},
 		Upload: UploadConfig{
 			MaxSizeMB: 50,

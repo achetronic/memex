@@ -19,11 +19,14 @@
 package ingestion
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/achetronic/memex/internal/chunker"
 	"github.com/achetronic/memex/internal/db"
@@ -33,7 +36,6 @@ import (
 )
 
 const (
-	// baseRetryDelay is the initial wait before the first retry.
 	baseRetryDelay = 2 * time.Second
 )
 
@@ -42,7 +44,7 @@ type Job struct {
 	DocumentID uuid.UUID
 	Namespace  string
 	Filename   string
-	Content    io.Reader
+	FilePath   string
 }
 
 // Worker is the ingestion pipeline orchestrator. It reads jobs from a channel
@@ -94,8 +96,6 @@ func (w *Worker) Enqueue(job Job) bool {
 	}
 }
 
-// run is the main loop for a single worker goroutine. It processes jobs
-// sequentially, retrying on failure with exponential backoff.
 func (w *Worker) run(id int) {
 	w.log.Info("ingestion worker started", "worker_id", id)
 	for job := range w.jobs {
@@ -103,16 +103,29 @@ func (w *Worker) run(id int) {
 	}
 }
 
-// processWithRetry attempts to process a job up to maxRetry times.
-// On exhaustion it marks the document as failed and logs the error.
-// It always moves on to the next job regardless of outcome.
+// processWithRetry separates the pipeline into two phases:
+//
+//  1. Parse & chunk (deterministic, CPU-only) — executed once. If this
+//     fails the error is permanent and retrying is pointless.
+//  2. Embed & store (network/IO) — retried with exponential backoff
+//     because these can fail transiently.
 func (w *Worker) processWithRetry(job Job) {
+	ctx := context.Background()
+
+	if err := w.store.UpdateDocumentStatus(ctx, job.DocumentID, db.StatusProcessing, nil); err != nil {
+		w.fail(job, fmt.Errorf("marking document as processing: %w", err))
+		return
+	}
+
+	chunks, err := w.parseAndChunk(job)
+	if err != nil {
+		w.fail(job, err)
+		return
+	}
+
 	var lastErr error
-
 	for attempt := 1; attempt <= w.maxRetry; attempt++ {
-		ctx := context.Background()
-
-		if err := w.process(ctx, job); err != nil {
+		if err := w.embedAndStore(ctx, job, chunks); err != nil {
 			lastErr = err
 			w.log.Warn("ingestion attempt failed",
 				"document_id", job.DocumentID,
@@ -121,10 +134,8 @@ func (w *Worker) processWithRetry(job Job) {
 				"max_retries", w.maxRetry,
 				"error", err,
 			)
-
 			if attempt < w.maxRetry {
-				delay := backoff(attempt)
-				time.Sleep(delay)
+				time.Sleep(backoff(attempt))
 			}
 			continue
 		}
@@ -136,9 +147,94 @@ func (w *Worker) processWithRetry(job Job) {
 		return
 	}
 
-	// All attempts exhausted — mark document as failed.
-	errMsg := lastErr.Error()
-	w.log.Error("ingestion failed after all retries",
+	w.fail(job, lastErr)
+}
+
+// parseAndChunk runs the deterministic part of the pipeline: select parser,
+// extract text, normalise, and split into chunks. Errors here are permanent.
+func (w *Worker) parseAndChunk(job Job) ([]chunker.Chunk, error) {
+	p, err := parser.ForFile(job.Filename)
+	if err != nil {
+		return nil, fmt.Errorf("selecting parser: %w", err)
+	}
+
+	data, err := os.ReadFile(job.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("reading file from disk: %w", err)
+	}
+
+	text, err := p.Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("parsing document: %w", err)
+	}
+
+	text = normaliseText(text)
+
+	if text == "" {
+		return nil, fmt.Errorf("parser returned empty text for %q", job.Filename)
+	}
+
+	chunks := w.chunker.Split(text)
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("chunker returned no chunks for %q", job.Filename)
+	}
+
+	return chunks, nil
+}
+
+// embedAndStore runs the IO-bound part of the pipeline: generate embeddings
+// and persist chunks. It deletes any previously inserted chunks for this
+// document before inserting, making retries idempotent.
+func (w *Worker) embedAndStore(ctx context.Context, job Job, chunks []chunker.Chunk) error {
+	texts := make([]string, len(chunks))
+	for i, c := range chunks {
+		texts[i] = c.Content
+	}
+
+	vectors, err := w.embedder.EmbedBatch(ctx, texts)
+	if err != nil {
+		return fmt.Errorf("generating embeddings: %w", err)
+	}
+
+	if err := w.store.DeleteChunksByDocument(ctx, job.DocumentID); err != nil {
+		return fmt.Errorf("cleaning up previous chunks: %w", err)
+	}
+
+	dbChunks := make([]db.Chunk, len(chunks))
+	for i, c := range chunks {
+		dbChunks[i] = db.Chunk{
+			ChunkIndex: c.Index,
+			Content:    c.Content,
+			Metadata:   map[string]any{"filename": job.Filename},
+		}
+	}
+
+	if err := w.store.InsertChunks(ctx, job.DocumentID, job.Namespace, dbChunks, vectors); err != nil {
+		return fmt.Errorf("storing chunks: %w", err)
+	}
+
+	if err := w.store.UpdateDocumentChunkCount(ctx, job.DocumentID, len(dbChunks)); err != nil {
+		return fmt.Errorf("updating chunk count: %w", err)
+	}
+
+	if err := w.store.UpdateDocumentStatus(ctx, job.DocumentID, db.StatusCompleted, nil); err != nil {
+		return fmt.Errorf("marking document as completed: %w", err)
+	}
+
+	if err := w.store.ClearFilePath(ctx, job.DocumentID); err != nil {
+		w.log.Warn("failed to clear file_path in DB", "document_id", job.DocumentID, "error", err)
+	}
+	if err := os.Remove(job.FilePath); err != nil && !os.IsNotExist(err) {
+		w.log.Warn("failed to remove file from disk", "path", job.FilePath, "error", err)
+	}
+
+	return nil
+}
+
+// fail marks a document as failed and logs the error.
+func (w *Worker) fail(job Job, err error) {
+	errMsg := err.Error()
+	w.log.Error("ingestion failed",
 		"document_id", job.DocumentID,
 		"filename", job.Filename,
 		"error", errMsg,
@@ -153,74 +249,36 @@ func (w *Worker) processWithRetry(job Job) {
 	}
 }
 
-// process runs the full ingestion pipeline for a single job:
-// parse → chunk → embed → store. It updates document status at each stage.
-func (w *Worker) process(ctx context.Context, job Job) error {
-	// Mark as processing.
-	if err := w.store.UpdateDocumentStatus(ctx, job.DocumentID, db.StatusProcessing, nil); err != nil {
-		return fmt.Errorf("marking document as processing: %w", err)
-	}
-
-	// 1. Parse: extract plain text from the raw file.
-	p, err := parser.ForFile(job.Filename)
-	if err != nil {
-		return fmt.Errorf("selecting parser: %w", err)
-	}
-
-	text, err := p.Parse(job.Content)
-	if err != nil {
-		return fmt.Errorf("parsing document: %w", err)
-	}
-
-	if text == "" {
-		return fmt.Errorf("parser returned empty text for %q", job.Filename)
-	}
-
-	// 2. Chunk: split text into overlapping segments.
-	rawChunks := w.chunker.Split(text)
-	if len(rawChunks) == 0 {
-		return fmt.Errorf("chunker returned no chunks for %q", job.Filename)
-	}
-
-	// 3. Embed: generate a vector for each chunk.
-	texts := make([]string, len(rawChunks))
-	for i, c := range rawChunks {
-		texts[i] = c.Content
-	}
-
-	vectors, err := w.embedder.EmbedBatch(ctx, texts)
-	if err != nil {
-		return fmt.Errorf("generating embeddings: %w", err)
-	}
-
-	// 4. Store: persist chunks and embeddings in a single transaction.
-	dbChunks := make([]db.Chunk, len(rawChunks))
-	for i, c := range rawChunks {
-		dbChunks[i] = db.Chunk{
-			ChunkIndex: c.Index,
-			Content:    c.Content,
-			Metadata:   map[string]any{"filename": job.Filename},
+// normaliseText cleans up parser output before chunking: strips NUL bytes,
+// collapses runs of whitespace, and trims the result.
+func normaliseText(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsControl(r) {
+			return -1
 		}
+		return r
+	}, s)
+
+	var buf strings.Builder
+	buf.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		isSpace := r != '\n' && unicode.IsSpace(r)
+		if isSpace {
+			if !prevSpace {
+				buf.WriteRune(' ')
+			}
+			prevSpace = true
+			continue
+		}
+		prevSpace = false
+		buf.WriteRune(r)
 	}
 
-	if err := w.store.InsertChunks(ctx, job.DocumentID, job.Namespace, dbChunks, vectors); err != nil {
-		return fmt.Errorf("storing chunks: %w", err)
-	}
-
-	// Update chunk count and mark completed.
-	if err := w.store.UpdateDocumentChunkCount(ctx, job.DocumentID, len(dbChunks)); err != nil {
-		return fmt.Errorf("updating chunk count: %w", err)
-	}
-
-	if err := w.store.UpdateDocumentStatus(ctx, job.DocumentID, db.StatusCompleted, nil); err != nil {
-		return fmt.Errorf("marking document as completed: %w", err)
-	}
-
-	return nil
+	return strings.TrimSpace(buf.String())
 }
 
-// backoff returns the wait duration for the given attempt number using
-// exponential backoff: baseRetryDelay * 2^(attempt-1).
 func backoff(attempt int) time.Duration {
 	d := baseRetryDelay
 	for i := 1; i < attempt; i++ {

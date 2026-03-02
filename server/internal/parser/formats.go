@@ -239,12 +239,27 @@ func (p *RTFParser) Parse(r io.Reader) (string, error) {
 	return stripRTF(string(b)), nil
 }
 
+// rtfSkipGroups lists RTF destination groups whose content is metadata,
+// not visible document text. When the parser enters one of these groups
+// it suppresses output until the matching closing brace.
+var rtfSkipGroups = map[string]bool{
+	"fonttbl": true, "colortbl": true, "stylesheet": true,
+	"info": true, "pict": true, "header": true, "footer": true,
+	"headerl": true, "headerr": true, "footerl": true, "footerr": true,
+	"footnote": true, "object": true, "themedata": true,
+	"colorschememapping": true, "datastore": true, "latentstyles": true,
+	"fldinst": true,
+}
+
 // stripRTF removes RTF control words, groups, and special characters,
-// returning the underlying plain text content.
+// returning the underlying plain text content. It tracks a stack of
+// "skip" depths so metadata groups are silenced while body text inside
+// the root group is emitted.
 func stripRTF(s string) string {
 	var buf strings.Builder
 	i := 0
 	depth := 0
+	skipDepth := 0
 
 	for i < len(s) {
 		ch := s[i]
@@ -254,33 +269,52 @@ func stripRTF(s string) string {
 			i++
 		case ch == '}':
 			if depth > 0 {
+				if skipDepth >= depth {
+					skipDepth = 0
+				}
 				depth--
 			}
 			i++
 		case ch == '\\' && i+1 < len(s):
-			i++ // skip backslash
+			i++
 			if s[i] == '\\' || s[i] == '{' || s[i] == '}' {
-				// Escaped literal character.
-				buf.WriteByte(s[i])
+				if skipDepth == 0 {
+					buf.WriteByte(s[i])
+				}
 				i++
 			} else if s[i] == '\n' || s[i] == '\r' {
-				// Paragraph break.
-				buf.WriteRune('\n')
 				i++
 			} else {
-				// Skip control word (letters) and optional numeric parameter.
+				start := i
 				for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z')) {
 					i++
 				}
+				word := s[start:i]
 				for i < len(s) && (s[i] == '-' || (s[i] >= '0' && s[i] <= '9')) {
 					i++
 				}
 				if i < len(s) && s[i] == ' ' {
-					i++ // consume delimiter space
+					i++
+				}
+
+				if skipDepth > 0 {
+					continue
+				}
+
+				if rtfSkipGroups[word] {
+					skipDepth = depth
+					continue
+				}
+
+				switch word {
+				case "par", "line":
+					buf.WriteRune('\n')
+				case "tab":
+					buf.WriteRune('\t')
 				}
 			}
 		default:
-			if depth == 0 {
+			if skipDepth == 0 {
 				buf.WriteByte(ch)
 			}
 			i++

@@ -33,6 +33,10 @@ chunker:
 search:
   default_limit: 5  # default number of results returned when limit is not specified
 
+storage:
+  data_dir: "data"            # directory for temporary file storage during ingestion
+  instance_id: "${HOSTNAME}"  # unique per instance; defaults to OS hostname
+
 upload:
   max_size_mb: 50   # maximum upload file size in MB
 

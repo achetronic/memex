@@ -16,7 +16,7 @@ the Model Context Protocol.
 4. [Configuration reference](#configuration-reference)
    - [server](#server)
    - [memex](#memex)
-   - [memex.auth — API key resolution](#memexauth--api-key-resolution)
+   - [memex.auth — API key and namespace resolution](#memexauth--api-key-and-namespace-resolution)
    - [middleware.access_logs](#middlewareaccess_logs)
    - [middleware.jwt](#middlewarejwt)
    - [policies.rules](#policiesrules)
@@ -117,7 +117,7 @@ memex:
   default_namespace: ""               # optional — used when no namespace is passed per-call
 ```
 
-### memex.auth — API key resolution
+### memex.auth — API key and namespace resolution
 
 When the Memex API requires authentication, memex-mcp resolves the API key for
 each request using this precedence (first non-empty value wins):
@@ -130,11 +130,23 @@ each request using this precedence (first non-empty value wins):
 3. **Static key for `"*"`** — catch-all fallback in `namespace_keys`.
 4. **No credential** — compatible with Memex instances that have no auth yet.
 
+When `forward_namespace: true`, memex-mcp also reads the `X-Memex-Namespace`
+header from the agent's incoming request and uses it as a fallback when the
+tool call does not include an explicit `namespace` argument. Resolution order:
+
+1. Explicit `namespace` argument in the tool call.
+2. `X-Memex-Namespace` header from the incoming request (only when `forward_namespace: true`).
+3. `default_namespace` from the config.
+
+This is useful in multi-tenant proxy/gateway setups where the namespace is
+injected by an upstream layer.
+
 ```yaml
 memex:
   base_url: "http://localhost:8080"
   auth:
     forward_api_key: true              # agents send X-Memex-Api-Key; JWT auth required
+    forward_namespace: true            # use X-Memex-Namespace header as fallback namespace
     namespace_keys:
       invoices:  "${MEMEX_KEY_INVOICES}"
       contracts: "${MEMEX_KEY_CONTRACTS}"

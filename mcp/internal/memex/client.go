@@ -243,7 +243,7 @@ func (c *Client) UploadDocument(namespace, apiKey, filename string, content []by
 	defer resp.Body.Close()
 
 	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(data))
 	}
 

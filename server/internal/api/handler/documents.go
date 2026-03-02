@@ -15,6 +15,7 @@
 package handler
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -93,22 +94,19 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute SHA-256 of the file content for deduplication.
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		h.log.Error("failed to hash file", "error", err)
+	// Read entire file into memory so the ingestion worker can process it
+	// after the HTTP request completes.
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		h.log.Error("failed to read file", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not read file")
 		return
 	}
-	fileHash := fmt.Sprintf("%x", hasher.Sum(nil))
 
-	// Seek back to the beginning so the ingestion worker can read the file.
-	if seeker, ok := file.(io.Seeker); ok {
-		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not process file")
-			return
-		}
-	}
+	// Compute SHA-256 of the file content for deduplication.
+	hasher := sha256.New()
+	hasher.Write(fileBytes)
+	fileHash := fmt.Sprintf("%x", hasher.Sum(nil))
 
 	// Dedup check: reject if the same file (by hash) already exists in this namespace.
 	existing, err := h.store.FindDocumentByHash(r.Context(), namespace, fileHash)
@@ -136,7 +134,7 @@ func (h *Documents) Upload(w http.ResponseWriter, r *http.Request) {
 		DocumentID: doc.ID,
 		Namespace:  namespace,
 		Filename:   filename,
-		Content:    file,
+		Content:    bytes.NewReader(fileBytes),
 	}
 
 	if !h.worker.Enqueue(job) {

@@ -54,6 +54,7 @@ type EmbeddingsConfig struct {
 type WorkerConfig struct {
 	PoolSize   int `yaml:"pool_size"`
 	MaxRetries int `yaml:"max_retries"`
+	QueueSize  int `yaml:"queue_size"`
 }
 
 // ChunkerConfig holds text chunking settings.
@@ -124,6 +125,7 @@ func defaults() Config {
 		Worker: WorkerConfig{
 			PoolSize:   3,
 			MaxRetries: 3,
+			QueueSize:  0,
 		},
 		Chunker: ChunkerConfig{
 			Size:    512,

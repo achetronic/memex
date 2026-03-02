@@ -101,10 +101,12 @@ func run() error {
 	chk := chunker.New(cfg.Chunker.Size, cfg.Chunker.Overlap)
 
 	// 7. Start ingestion worker pool.
-	// Queue size is 10× the pool size to allow burst uploads.
-	queueSize := cfg.Worker.PoolSize * 10
+	queueSize := cfg.Worker.QueueSize
+	if queueSize <= 0 {
+		queueSize = cfg.Worker.PoolSize * 10
+	}
 	worker := ingestion.NewWorker(store, emb, chk, log, cfg.Worker.PoolSize, cfg.Worker.MaxRetries, queueSize)
-	log.Info("ingestion worker pool started", "pool_size", cfg.Worker.PoolSize)
+	log.Info("ingestion worker pool started", "pool_size", cfg.Worker.PoolSize, "queue_size", queueSize)
 
 	// 8. Build HTTP router.
 	routerCfg := api.RouterConfig{

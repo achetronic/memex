@@ -24,6 +24,7 @@ embeddings:
 worker:
   pool_size: 3      # concurrent ingestion workers
   max_retries: 3    # attempts per document before marking as failed
+  queue_size: 30    # max queued jobs; 0 or omit → pool_size × 10
 
 chunker:
   size: 512         # target chunk size in words

@@ -16,7 +16,8 @@ No cloud dependency, no vendor lock-in — just your data, your server, and an O
 - **Semantic search**: cosine similarity via pgvector, powered by any OpenAI-compatible embeddings API
 - **Namespaces**: logical partitions — each document belongs to a namespace, queries are always scoped
 - **API key auth**: optional per-namespace key validation, configured in a YAML file with env var expansion
-- **Resilient worker**: configurable pool size, exponential backoff retries, graceful failure reporting
+- **Resilient worker**: configurable pool size and queue depth, exponential backoff retries, crash-safe ingestion — files are persisted to disk so pending documents survive a restart
+- **Multi-instance ready**: each instance tracks its own uploads via `instance_id`, safe to scale horizontally with local or shared storage
 - **REST API**: fully documented with Swagger UI at `/api/v1/swagger/index.html`
 - **Vue 3 frontend**: upload, manage and search documents — served by the Go binary itself
 - **Single docker-compose**: postgres (with pgvector) + memex, ready to run
@@ -56,6 +57,7 @@ embeddings:
 worker:
   pool_size:   3
   max_retries: 3
+  queue_size:  30    # max queued jobs; 0 or omit → pool_size × 10
 
 chunker:
   size:    512
@@ -63,6 +65,10 @@ chunker:
 
 search:
   default_limit: 5
+
+storage:
+  data_dir: "data"            # temporary file storage during ingestion
+  instance_id: "${HOSTNAME}"  # unique per instance; defaults to OS hostname
 
 upload:
   max_size_mb: 50
@@ -108,9 +114,10 @@ A fully documented example is in [`server/docs/config.yaml`](server/docs/config.
 | `log` | Format (`console`/`json`) and level (`debug`, `info`, `warn`, `error`) |
 | `database` | PostgreSQL DSN |
 | `embeddings` | Base URL, API key, model name and dimensions |
-| `worker` | Pool size and max retries |
+| `worker` | Pool size, max retries and queue depth |
 | `chunker` | Chunk size and overlap (in words) |
 | `search` | Default result limit |
+| `storage` | Data directory and instance ID for crash-safe ingestion |
 | `upload` | Max file size in MB |
 | `namespaces` | Declared namespaces (requests to undeclared ones → 400) |
 | `auth.api_keys` | API keys and their allowed namespaces (empty → auth disabled) |
@@ -185,6 +192,10 @@ pending → processing → completed
 
 Documents in `failed` status have their error message stored and visible via
 `GET /api/v1/documents/{id}`. They can be deleted and re-uploaded.
+
+On restart, documents that were `pending` or `processing` are automatically
+re-enqueued from the persisted file on disk. If the file is missing (e.g.
+the storage volume was lost), they are marked as `failed`.
 
 ---
 

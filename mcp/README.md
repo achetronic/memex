@@ -288,10 +288,6 @@ Add memex-mcp to your `claude_desktop_config.json`:
 Namespaces are logical partitions within a Memex instance. They are forwarded
 as the `X-Memex-Namespace` HTTP header on every API request.
 
-> **Note:** namespace support in the Memex API is not yet implemented. The
-> header is sent now so that memex-mcp is ready when it lands — existing
-> deployments without namespace support will simply ignore the header.
-
 You can set a namespace per tool call:
 
 ```json
@@ -308,10 +304,6 @@ memex:
 ---
 
 ## API key authentication
-
-> **Note:** API key authentication in the Memex API is not yet implemented.
-> The resolution logic is in place so that no changes to memex-mcp will be
-> needed when it lands.
 
 memex-mcp resolves the Memex API key for each request in this order:
 

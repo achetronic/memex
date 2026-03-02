@@ -85,6 +85,13 @@ func (c *Client) ForwardApiKey() bool {
 	return c.auth.ForwardApiKey
 }
 
+// ForwardNamespace reports whether namespace forwarding is enabled. When true,
+// the X-Memex-Namespace header from the agent's incoming request is used as a
+// fallback when the tool call does not include an explicit namespace argument.
+func (c *Client) ForwardNamespace() bool {
+	return c.auth.ForwardNamespace
+}
+
 // do executes an HTTP request against the Memex API, setting the namespace and
 // API key headers according to the resolved values provided by the caller.
 func (c *Client) do(method, path, namespace, apiKey string, body interface{}) ([]byte, int, error) {

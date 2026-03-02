@@ -49,6 +49,12 @@ type MemexAuthConfig struct {
 	// caller could inject an arbitrary key.
 	ForwardApiKey bool `yaml:"forward_api_key,omitempty"`
 
+	// ForwardNamespace enables forwarding of the X-Memex-Namespace header from
+	// the agent's incoming request. When the tool call does not include an
+	// explicit namespace argument, the forwarded header value is used before
+	// falling back to default_namespace.
+	ForwardNamespace bool `yaml:"forward_namespace,omitempty"`
+
 	// NamespaceKeys maps namespace names to their static API keys.
 	// Use "*" as the key for a catch-all fallback.
 	// Example:

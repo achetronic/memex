@@ -18,6 +18,11 @@ memex:
     # to be enabled — without it any caller could inject an arbitrary key.
     forward_api_key: true
 
+    # forward_namespace: if true, memex-mcp uses the X-Memex-Namespace header
+    # from the agent's request as a fallback when the tool call does not include
+    # an explicit namespace argument. Useful in multi-tenant proxy/gateway setups.
+    forward_namespace: true
+
     # namespace_keys: static API keys per namespace, used when no forwarded key
     # is present. Use "*" as a catch-all fallback.
     namespace_keys:

@@ -100,6 +100,15 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// forwardedHeader returns the value of a forwarded HTTP header from the
+// agent's incoming request, or "" if absent or forwarding is not enabled.
+func (tm *ToolsManager) forwardedHeader(ctx context.Context, name string) string {
+	if headers := middlewares.ForwardedHeadersFromContext(ctx); headers != nil {
+		return headers.Get(name)
+	}
+	return ""
+}
+
 // resolveApiKey extracts the forwarded API key from the context (injected by
 // the HTTP middleware) and delegates to the client's resolution logic.
 //
@@ -110,14 +119,28 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 //  4. Empty string — no credential sent
 func (tm *ToolsManager) resolveApiKey(ctx context.Context, namespace string) string {
 	var forwarded string
-
 	if tm.dependencies.MemexClient.ForwardApiKey() {
-		if headers := middlewares.ForwardedHeadersFromContext(ctx); headers != nil {
-			forwarded = headers.Get("X-Memex-Api-Key")
+		forwarded = tm.forwardedHeader(ctx, "X-Memex-Api-Key")
+	}
+	return tm.dependencies.MemexClient.ResolveApiKey(namespace, forwarded)
+}
+
+// resolveNamespace determines the namespace for a request.
+//
+// Resolution order:
+//  1. Explicit tool argument (agent requested a specific namespace)
+//  2. X-Memex-Namespace from the agent's HTTP request (when forward_namespace: true)
+//  3. Empty string — Client.do() will fall back to default_namespace from config
+func (tm *ToolsManager) resolveNamespace(ctx context.Context, toolArg string) string {
+	if toolArg != "" {
+		return toolArg
+	}
+	if tm.dependencies.MemexClient.ForwardNamespace() {
+		if ns := tm.forwardedHeader(ctx, "X-Memex-Namespace"); ns != "" {
+			return ns
 		}
 	}
-
-	return tm.dependencies.MemexClient.ResolveApiKey(namespace, forwarded)
+	return ""
 }
 
 // baseName returns the last path segment of a file path (cross-platform).
@@ -236,7 +259,7 @@ func (tm *ToolsManager) AddTools() {
 
 // HandleListDocuments handles the list_documents tool call.
 func (tm *ToolsManager) HandleListDocuments(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	namespace := strArg(request, "namespace")
+	namespace := tm.resolveNamespace(ctx, strArg(request, "namespace"))
 	status := strArg(request, "status")
 	apiKey := tm.resolveApiKey(ctx, namespace)
 
@@ -250,7 +273,7 @@ func (tm *ToolsManager) HandleListDocuments(ctx context.Context, request mcp.Cal
 // HandleGetDocument handles the get_document tool call.
 func (tm *ToolsManager) HandleGetDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id := strArg(request, "id")
-	namespace := strArg(request, "namespace")
+	namespace := tm.resolveNamespace(ctx, strArg(request, "namespace"))
 	apiKey := tm.resolveApiKey(ctx, namespace)
 
 	doc, err := tm.dependencies.MemexClient.GetDocument(namespace, apiKey, id)
@@ -264,7 +287,7 @@ func (tm *ToolsManager) HandleGetDocument(ctx context.Context, request mcp.CallT
 // It reads the file from the local filesystem and streams it to the Memex API.
 func (tm *ToolsManager) HandleUploadDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	path := strArg(request, "path")
-	namespace := strArg(request, "namespace")
+	namespace := tm.resolveNamespace(ctx, strArg(request, "namespace"))
 
 	if path == "" {
 		return mcp.NewToolResultError("path is required"), nil
@@ -287,7 +310,7 @@ func (tm *ToolsManager) HandleUploadDocument(ctx context.Context, request mcp.Ca
 // HandleDeleteDocument handles the delete_document tool call.
 func (tm *ToolsManager) HandleDeleteDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	id := strArg(request, "id")
-	namespace := strArg(request, "namespace")
+	namespace := tm.resolveNamespace(ctx, strArg(request, "namespace"))
 	apiKey := tm.resolveApiKey(ctx, namespace)
 
 	if err := tm.dependencies.MemexClient.DeleteDocument(namespace, apiKey, id); err != nil {
@@ -299,7 +322,7 @@ func (tm *ToolsManager) HandleDeleteDocument(ctx context.Context, request mcp.Ca
 // HandleSearch handles the search tool call.
 func (tm *ToolsManager) HandleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query := strArg(request, "query")
-	namespace := strArg(request, "namespace")
+	namespace := tm.resolveNamespace(ctx, strArg(request, "namespace"))
 	limit := intArg(request, "limit", 5)
 	apiKey := tm.resolveApiKey(ctx, namespace)
 

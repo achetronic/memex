@@ -11,7 +11,8 @@ memex:
   base_url: "http://localhost:8080"
   # default_namespace: ""   # leave empty to send no namespace header by default
   # auth:
-  #   forward_api_key: true   # if true, X-Memex-Api-Key from the agent is forwarded to Memex (requires JWT auth)
+  #   forward_api_key: true       # if true, X-Memex-Api-Key from the agent is forwarded to Memex (requires JWT auth)
+  #   forward_namespace: true     # if true, X-Memex-Namespace from the agent is used as fallback namespace
   #   namespace_keys:                      # static keys per namespace
   #     my-namespace: "key-abc123"
   #     "*": "key-default"                # catch-all fallback

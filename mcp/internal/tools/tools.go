@@ -40,11 +40,20 @@ type ToolsManagerDependencies struct {
 // ToolsManager registers and owns all MCP tools.
 type ToolsManager struct {
 	dependencies ToolsManagerDependencies
+	toolPrefix   string
 }
 
 // NewToolsManager constructs a ToolsManager.
 func NewToolsManager(deps ToolsManagerDependencies) *ToolsManager {
-	return &ToolsManager{dependencies: deps}
+	return &ToolsManager{
+		dependencies: deps,
+		toolPrefix:   deps.AppCtx.ToolPrefix,
+	}
+}
+
+// toolName returns the full tool name by prepending the derived prefix.
+func (tm *ToolsManager) toolName(base string) string {
+	return tm.toolPrefix + base
 }
 
 // wrapWithMiddlewares applies all configured middlewares to a tool handler,
@@ -121,6 +130,17 @@ func baseName(path string) string {
 	return path
 }
 
+// ─── Tool base names ─────────────────────────────────────────────────────────
+
+const (
+	toolListDocuments  = "list_documents"
+	toolGetDocument    = "get_document"
+	toolUploadDocument = "upload_document"
+	toolDeleteDocument = "delete_document"
+	toolSearch         = "search"
+	toolHealth         = "health"
+)
+
 // ─── Tool registration ───────────────────────────────────────────────────────
 
 // AddTools registers every Memex MCP tool on the server.
@@ -128,7 +148,7 @@ func (tm *ToolsManager) AddTools() {
 
 	// list_documents
 	tm.dependencies.McpServer.AddTool(
-		mcp.NewTool("list_documents",
+		mcp.NewTool(tm.toolName(toolListDocuments),
 			mcp.WithDescription("List all documents in the given namespace. Optionally filter by ingestion status."),
 			mcp.WithString("namespace",
 				mcp.Description("Namespace to scope the request to (sent as X-Memex-Namespace). Falls back to the default configured namespace."),
@@ -142,7 +162,7 @@ func (tm *ToolsManager) AddTools() {
 
 	// get_document
 	tm.dependencies.McpServer.AddTool(
-		mcp.NewTool("get_document",
+		mcp.NewTool(tm.toolName(toolGetDocument),
 			mcp.WithDescription("Get the detail and current ingestion status of a single document."),
 			mcp.WithString("id",
 				mcp.Required(),
@@ -157,7 +177,7 @@ func (tm *ToolsManager) AddTools() {
 
 	// upload_document
 	tm.dependencies.McpServer.AddTool(
-		mcp.NewTool("upload_document",
+		mcp.NewTool(tm.toolName(toolUploadDocument),
 			mcp.WithDescription("Upload a local file to Memex for ingestion. The file is read from the path on the filesystem where memex-mcp is running."),
 			mcp.WithString("path",
 				mcp.Required(),
@@ -172,7 +192,7 @@ func (tm *ToolsManager) AddTools() {
 
 	// delete_document
 	tm.dependencies.McpServer.AddTool(
-		mcp.NewTool("delete_document",
+		mcp.NewTool(tm.toolName(toolDeleteDocument),
 			mcp.WithDescription("Delete a document and all its associated chunks from Memex."),
 			mcp.WithString("id",
 				mcp.Required(),
@@ -187,7 +207,7 @@ func (tm *ToolsManager) AddTools() {
 
 	// search
 	tm.dependencies.McpServer.AddTool(
-		mcp.NewTool("search",
+		mcp.NewTool(tm.toolName(toolSearch),
 			mcp.WithDescription("Perform a semantic search over the documents in a namespace. Returns the most relevant chunks with their source document and similarity score."),
 			mcp.WithString("query",
 				mcp.Required(),
@@ -205,7 +225,7 @@ func (tm *ToolsManager) AddTools() {
 
 	// health
 	tm.dependencies.McpServer.AddTool(
-		mcp.NewTool("health",
+		mcp.NewTool(tm.toolName(toolHealth),
 			mcp.WithDescription("Check the health of the upstream Memex instance (database and embeddings API connectivity)."),
 		),
 		tm.wrapWithMiddlewares(tm.HandleHealth),

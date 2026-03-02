@@ -56,13 +56,17 @@ type ToolPolicyMiddlewareDependencies struct {
 type ToolPolicyMiddleware struct {
 	dependencies    ToolPolicyMiddlewareDependencies
 	compiledPolicies []CompiledPolicy
+	toolPrefix       string
 }
 
 // NewToolPolicyMiddleware compiles all CEL expressions from the configuration
 // and returns a ready-to-use middleware. Returns an error if any expression
 // fails to compile.
 func NewToolPolicyMiddleware(deps ToolPolicyMiddlewareDependencies) (*ToolPolicyMiddleware, error) {
-	mw := &ToolPolicyMiddleware{dependencies: deps}
+	mw := &ToolPolicyMiddleware{
+		dependencies: deps,
+		toolPrefix:   deps.AppCtx.ToolPrefix,
+	}
 
 	env, err := cel.NewEnv(
 		cel.Variable("payload", cel.DynType),
@@ -106,7 +110,7 @@ func (mw *ToolPolicyMiddleware) Middleware(next server.ToolHandlerFunc) server.T
 			return mcp.NewToolResultError("access denied: unable to verify permissions"), nil
 		}
 
-		toolName := request.Params.Name
+		toolName := strings.TrimPrefix(request.Params.Name, mw.toolPrefix)
 		namespace := mw.extractNamespace(request)
 
 		for _, policy := range mw.compiledPolicies {

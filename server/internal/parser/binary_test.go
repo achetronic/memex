@@ -152,7 +152,7 @@ func TestExtractTextFromContentStream(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractTextFromContentStream([]byte(tt.stream))
+			got := extractTextFromContentStream([]byte(tt.stream), nil)
 			if tt.want == "" {
 				if got != "" {
 					t.Fatalf("expected empty string, got %q", got)
@@ -170,7 +170,7 @@ func TestExtractTextFromContentStream(t *testing.T) {
 // outside a BT block is never included in the output.
 func TestExtractTextFromContentStream_OutsideNotPresent(t *testing.T) {
 	stream := "(Outside) Tj BT (Inside) Tj ET"
-	got := extractTextFromContentStream([]byte(stream))
+	got := extractTextFromContentStream([]byte(stream), nil)
 	if strings.Contains(got, "Outside") {
 		t.Fatalf("text outside BT block should not appear, got %q", got)
 	}
@@ -423,8 +423,8 @@ func TestDecodeTJArray(t *testing.T) {
 	}{
 		{"strings only", "[(Hello)(World)]", "HelloWorld"},
 		{"large negative kerning produces space", "[(Hello) -250 (World)]", "Hello World"},
-		{"threshold boundary negative just under", "[(A) -99 (B)]", "AB"},
-		{"threshold boundary negative just over", "[(A) -101 (B)]", "A B"},
+		{"threshold boundary negative just under", "[(A) -49 (B)]", "AB"},
+		{"threshold boundary negative just over", "[(A) -51 (B)]", "A B"},
 		{"positive kerning no space", "[(A) 50 (B)]", "AB"},
 		{"hex strings in array", "[<48656c6c6f><576f726c64>]", "HelloWorld"},
 		{"not an array", "(NotAnArray)", ""},
@@ -845,6 +845,198 @@ func TestExtractXMLText_MissingTarget(t *testing.T) {
 	_, err := extractXMLText(zr, "missing.xml", docxBreakElements)
 	if err == nil {
 		t.Fatal("expected error for missing target file")
+	}
+}
+
+// ─── Fix 1: Tm operator newline detection ────────────────────────────────────
+
+// TestTmOperator_NewlineOnYChange verifies that a significant change in the Y
+// component of the Tm text matrix causes a newline to be emitted between the
+// two text runs, simulating a line break produced via absolute positioning.
+func TestTmOperator_NewlineOnYChange(t *testing.T) {
+	// Two text runs at Y=750 and Y=736 — a 14-unit drop, well above the threshold.
+	stream := "BT 1 0 0 1 50 750 Tm (FirstLine) Tj 1 0 0 1 50 736 Tm (SecondLine) Tj ET"
+	got := extractTextFromContentStream([]byte(stream), nil)
+	if !strings.Contains(got, "FirstLine") {
+		t.Fatalf("expected FirstLine in output, got %q", got)
+	}
+	if !strings.Contains(got, "SecondLine") {
+		t.Fatalf("expected SecondLine in output, got %q", got)
+	}
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("expected newline between lines, got %q", got)
+	}
+}
+
+// TestTmOperator_NoNewlineOnSameY verifies that text runs at the same Y
+// position (e.g. bold + regular on the same line) are not split with a newline.
+func TestTmOperator_NoNewlineOnSameY(t *testing.T) {
+	stream := "BT 1 0 0 1 50 750 Tm (Hello) Tj 1 0 0 1 120 750 Tm (World) Tj ET"
+	got := extractTextFromContentStream([]byte(stream), nil)
+	if !strings.Contains(got, "Hello") || !strings.Contains(got, "World") {
+		t.Fatalf("expected both words in output, got %q", got)
+	}
+	// A trailing newline from ET is fine; what we must not see is a newline
+	// between Hello and World (i.e. the text must not be split across lines).
+	core := strings.TrimSpace(got)
+	if strings.Contains(core, "\n") {
+		t.Fatalf("expected no newline between same-Y text runs, got %q", got)
+	}
+}
+
+// ─── Fix 2: TJ threshold at -50 ──────────────────────────────────────────────
+
+// TestTJThreshold_WordSpaceAt50 verifies that a kerning value of exactly -50
+// does not produce a space (it is at the boundary, not below it).
+func TestTJThreshold_WordSpaceAt50(t *testing.T) {
+	got := decodeTJArray("[(A) -50 (B)]")
+	if got != "AB" {
+		t.Fatalf("kerning -50 should not produce space, got %q", got)
+	}
+}
+
+// TestTJThreshold_WordSpaceAt51 verifies that a kerning value of -51 (just
+// below the threshold) produces a space between the two strings.
+func TestTJThreshold_WordSpaceAt51(t *testing.T) {
+	got := decodeTJArray("[(A) -51 (B)]")
+	if got != "A B" {
+		t.Fatalf("kerning -51 should produce space, got %q", got)
+	}
+}
+
+// ─── Fix 3: PUA ligature mapping ─────────────────────────────────────────────
+
+// TestPUALigatures_StandardBlock verifies that the standard Unicode ligature
+// block (U+FB00–U+FB06) is correctly mapped to ASCII equivalents.
+func TestPUALigatures_StandardBlock(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"\uFB01nancial", "financial"},
+		{"\uFB02oor", "floor"},
+		{"\uFB00ect", "ffect"},
+		{"\uFB03cient", "fficient"},
+		{"\uFB04uent", "fflue" + "nt"},
+		{"\uFB06uff", "stuff"},
+	}
+	for _, tt := range tests {
+		got := mapPUALigatures(tt.input)
+		if got != tt.want {
+			t.Errorf("mapPUALigatures(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestPUALigatures_PrivateBlock verifies the common PUA block (U+E001–U+E005)
+// used by some PDF generators is also remapped correctly.
+func TestPUALigatures_PrivateBlock(t *testing.T) {
+	got := mapPUALigatures("\uE001nancial")
+	if got != "financial" {
+		t.Fatalf("PUA E001 should map to fi, got %q", got)
+	}
+}
+
+// TestPUALigatures_NoOp verifies that strings without PUA codepoints are
+// returned unchanged and without allocation.
+func TestPUALigatures_NoOp(t *testing.T) {
+	input := "normal text without ligatures"
+	got := mapPUALigatures(input)
+	if got != input {
+		t.Fatalf("plain string should be unchanged, got %q", got)
+	}
+}
+
+// ─── Fix 4: ToUnicode CMap parsing ───────────────────────────────────────────
+
+// TestParseCMap_BfChar verifies that beginbfchar sections are correctly parsed
+// into CID→rune mappings.
+func TestParseCMap_BfChar(t *testing.T) {
+	cmap := []byte(`
+/CIDInit /ProcSet findresource begin
+beginbfchar
+<0041> <0048>
+<0042> <0065>
+<0043> <006C>
+endbfchar
+end
+`)
+	m := parseCMap(cmap)
+	if m[0x0041] != 'H' {
+		t.Errorf("CID 0x41 should map to H, got %c", m[0x0041])
+	}
+	if m[0x0042] != 'e' {
+		t.Errorf("CID 0x42 should map to e, got %c", m[0x0042])
+	}
+	if m[0x0043] != 'l' {
+		t.Errorf("CID 0x43 should map to l, got %c", m[0x0043])
+	}
+}
+
+// TestParseCMap_BfRange verifies that beginbfrange sections correctly expand
+// into a contiguous CID→rune mapping.
+func TestParseCMap_BfRange(t *testing.T) {
+	cmap := []byte(`
+beginbfrange
+<0041> <0045> <0061>
+endbfrange
+`)
+	m := parseCMap(cmap)
+	// Range 0x41–0x45 maps to 'a'–'e'
+	for i := 0; i < 5; i++ {
+		cid := uint32(0x41 + i)
+		want := rune('a' + i)
+		if m[cid] != want {
+			t.Errorf("CID 0x%X should map to %c, got %c", cid, want, m[cid])
+		}
+	}
+}
+
+// TestDecodePDFStringCID verifies that CID-encoded strings are correctly
+// decoded using the ToUnicode map.
+func TestDecodePDFStringCID(t *testing.T) {
+	// Map: CID 0x0048→'H', 0x0069→'i'
+	m := map[uint32]rune{0x0048: 'H', 0x0069: 'i'}
+	// Hex string encoding of CIDs 0x0048 0x0069
+	got := decodePDFStringCID("<00480069>", m)
+	if got != "Hi" {
+		t.Fatalf("expected Hi, got %q", got)
+	}
+}
+
+// TestDecodePDFStringWithFont_FallsBackWithoutMap verifies that
+// decodePDFStringWithFont falls back to standard decoding when no ToUnicode
+// map is available for the active font.
+func TestDecodePDFStringWithFont_FallsBackWithoutMap(t *testing.T) {
+	got := decodePDFStringWithFont("(Hello)", "F1", nil)
+	if got != "Hello" {
+		t.Fatalf("expected Hello, got %q", got)
+	}
+}
+
+// TestParseHexToken verifies the hex token parser handles all supported sizes.
+func TestParseHexToken(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"<41>", 0x41},
+		{"<0041>", 0x0041},
+		{"<00410042>", -1}, // 4 bytes → treated as uint32; 0x00410042 fits in int
+		{"<>", -1},
+		{"notahex", -1},
+	}
+	for _, tt := range tests {
+		got := parseHexToken(tt.input)
+		if tt.input == "<00410042>" {
+			if got != 0x00410042 {
+				t.Errorf("parseHexToken(%q) = %d, want %d", tt.input, got, 0x00410042)
+			}
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("parseHexToken(%q) = %d, want %d", tt.input, got, tt.want)
+		}
 	}
 }
 
